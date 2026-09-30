@@ -7,25 +7,21 @@ import com.example.btchat.model.ChatMessage
 import com.example.btchat.model.MessageStatus
 import com.example.btchat.model.MessageType
 
-/**
- * Room entity — persisted chat message.
- */
 @Entity(
     tableName = "messages",
     indices = [
         Index("conversationId"),
         Index("timestamp"),
-        Index("status"),
-        Index(value = ["remoteId"], unique = false)
+        Index("status")
     ]
 )
 data class MessageEntity(
     @PrimaryKey val id: String,
-    val conversationId: String,     // sorted pair: "macA|macB"
+    val conversationId: String,
     val senderMac: String,
     val receiverMac: String,
     val text: String,
-    val type: String,               // enum name
+    val type: String,
     val timestamp: Long,
     val status: String,
     val filePath: String? = null,
