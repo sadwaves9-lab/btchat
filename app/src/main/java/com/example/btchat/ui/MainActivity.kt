@@ -2,6 +2,8 @@ package com.example.btchat.ui
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothManager
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -21,12 +23,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.btchat.bluetooth.BtService
 import com.example.btchat.data.AppDatabase
 import com.example.btchat.data.Message
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -65,7 +69,7 @@ class MainActivity : ComponentActivity() {
 @SuppressLint("MissingPermission")
 @Composable
 fun App(bt: BtService) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val ctx = LocalContext.current
     val db = remember { AppDatabase.get(ctx) }
     val scope = rememberCoroutineScope()
 
@@ -74,14 +78,12 @@ fun App(bt: BtService) {
     var selectedName by remember { mutableStateOf<String?>(null) }
     val connectedMac by bt.connected.collectAsState()
 
-    val devices = remember {
-        mutableStateListOf<Pair<String, String>>()
-    }
+    val devices = remember { mutableStateListOf<Pair<String, String>>() }
 
     LaunchedEffect(Unit) {
         bt.startServer()
-        val adapter = (ctx.getSystemService(android.content.Context.BLUETOOTH_SERVICE)
-            as? android.bluetooth.BluetoothManager)?.adapter
+        val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE)
+            as? BluetoothManager)?.adapter
         adapter?.bondedDevices?.forEach { d ->
             devices.add(d.address to (d.name ?: "Unknown"))
         }
@@ -98,7 +100,7 @@ fun App(bt: BtService) {
             }
         )
         "chat" -> ChatScreen(
-            mac = selectedMac!!,
+            mac = selectedMac ?: "",
             name = selectedName ?: "Chat",
             bt = bt,
             db = db,
@@ -114,7 +116,11 @@ fun HomeScreen(
     connectedMac: String?,
     onDeviceClick: (String, String) -> Unit
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
         Text("BTChat", fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
@@ -126,11 +132,16 @@ fun HomeScreen(
         Text("Paired Devices", fontSize = 14.sp, color = Color.Gray)
         Spacer(Modifier.height(8.dp))
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(devices) { (mac, name) ->
+            items(devices) { pair ->
+                val mac = pair.first
+                val name = pair.second
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(12.dp)
+                        )
                         .clickable { onDeviceClick(mac, name) }
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -138,10 +149,17 @@ fun HomeScreen(
                     Box(
                         Modifier
                             .size(40.dp)
-                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50)),
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                RoundedCornerShape(50)
+                            ),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(
+                            name.take(1).uppercase(),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -155,24 +173,25 @@ fun HomeScreen(
 }
 
 @SuppressLint("MissingPermission")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     mac: String,
     name: String,
     bt: BtService,
     db: AppDatabase,
-    scope: kotlinx.coroutines.CoroutineScope,
+    scope: CoroutineScope,
     onBack: () -> Unit
 ) {
+    val ctx = LocalContext.current
     var input by remember { mutableStateOf("") }
     val messages by db.messageDao().messagesFor(mac).collectAsState(initial = emptyList())
     val connectedMac by bt.connected.collectAsState()
 
     LaunchedEffect(mac) {
         if (connectedMac != mac) {
-            val adapter = (androidx.compose.ui.platform.LocalContext.current
-                .getSystemService(android.content.Context.BLUETOOTH_SERVICE)
-                as? android.bluetooth.BluetoothManager)?.adapter
+            val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE)
+                as? BluetoothManager)?.adapter
             try {
                 val device = adapter?.getRemoteDevice(mac)
                 device?.let { bt.connect(it) }
@@ -181,7 +200,9 @@ fun ChatScreen(
     }
 
     LaunchedEffect(Unit) {
-        bt.incoming.collect { (fromMac, text) ->
+        bt.incoming.collect { pair ->
+            val fromMac = pair.first
+            val text = pair.second
             scope.launch {
                 db.messageDao().insert(
                     Message(deviceMac = fromMac, text = text, isSent = false)
@@ -197,11 +218,16 @@ fun ChatScreen(
                 IconButton(onClick = onBack) {
                     Icon(Icons.Default.ArrowBack, null)
                 }
-            }
+            },
+            colors = TopAppBarDefaults.topAppBarColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         )
 
         LazyColumn(
-            Modifier.weight(1f).padding(8.dp),
+            Modifier
+                .weight(1f)
+                .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             items(messages, key = { it.id }) { msg ->
@@ -221,7 +247,8 @@ fun ChatScreen(
                     ) {
                         Text(
                             msg.text,
-                            color = if (msg.isSent) Color.White else MaterialTheme.colorScheme.onSurface
+                            color = if (msg.isSent) Color.White
+                            else MaterialTheme.colorScheme.onSurface
                         )
                     }
                 }
@@ -229,7 +256,9 @@ fun ChatScreen(
         }
 
         Row(
-            Modifier.fillMaxWidth().padding(8.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
@@ -246,7 +275,9 @@ fun ChatScreen(
                     if (t.isEmpty()) return@IconButton
                     bt.send(t)
                     scope.launch {
-                        db.messageDao().insert(Message(deviceMac = mac, text = t, isSent = true))
+                        db.messageDao().insert(
+                            Message(deviceMac = mac, text = t, isSent = true)
+                        )
                     }
                     input = ""
                 }

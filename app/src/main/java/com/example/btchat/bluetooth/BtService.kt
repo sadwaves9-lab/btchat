@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -55,8 +56,9 @@ class BtService(private val context: Context) {
         serverJob?.cancel()
         serverJob = scope.launch {
             try {
-                val server: BluetoothServerSocket = adapter?.listenUsingRfcommWithServiceRecord("BTChat", uuid) ?: return@launch
-                while (isActive) {
+                val server: BluetoothServerSocket =
+                    adapter?.listenUsingRfcommWithServiceRecord("BTChat", uuid) ?: return@launch
+                while (currentCoroutineContext().isActive) {
                     val socket = server.accept() ?: continue
                     connectedSocket = socket
                     output = socket.outputStream
@@ -96,11 +98,12 @@ class BtService(private val context: Context) {
         val input: InputStream = socket.inputStream
         val buf = ByteArray(4096)
         try {
-            while (isActive) {
+            while (currentCoroutineContext().isActive) {
                 val n = input.read(buf)
                 if (n <= 0) break
                 val text = String(buf, 0, n)
-                _incoming.tryEmit(socket.remoteDevice?.address ?: "" to text)
+                val mac = socket.remoteDevice?.address ?: ""
+                _incoming.tryEmit(mac to text)
             }
         } catch (_: Exception) { }
         _connected.value = null
