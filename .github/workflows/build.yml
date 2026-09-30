@@ -58,16 +58,30 @@ jobs:
           chmod +x gradlew
           gradle assembleDebug --no-daemon 2>&1 | tee build.log
 
-      - name: Show errors
+      - name: Show errors in summary
         if: always()
         run: |
-          echo "## ERRORS" >> $GITHUB_STEP_SUMMARY
+          echo "# Build Errors" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '## Kotlin Errors' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep "e: file:///" build.log | head -20 >> $GITHUB_STEP_SUMMARY
-          grep -B1 -A5 "What went wrong" build.log | head -30 >> $GITHUB_STEP_SUMMARY
+          grep "e: file:///" build.log | head -30 >> $GITHUB_STEP_SUMMARY || echo "No Kotlin errors" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '## What went wrong' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -A 10 "What went wrong" build.log | head -20 >> $GITHUB_STEP_SUMMARY || echo "None" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Fail if error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Fail if build failed
         if: steps.build.outcome == 'failure'
         run: exit 1
 
@@ -75,11 +89,24 @@ jobs:
         run: |
           mkdir -p output
           cp app/build/outputs/apk/debug/app-debug.apk output/btchat-${{ steps.ver.outputs.version_name }}.apk
+          ls -la output/
 
-      - name: Auto Release
+      - name: Auto Release (for OTA)
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: BTChat ${{ steps.ver.outputs.version_name }}
-          body: "Auto-release #${{ github.run_number }}"
+          body: |
+            🚀 Auto Release
+            
+            Version: ${{ steps.ver.outputs.version_name }}
+            Build: #${{ github.run_number }}
           files: output/*.apk
+          draft: false
+          prerelease: false
+
+      - name: Upload Artifact (backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BTChat-APK
+          path: app/build/outputs/apk/debug/*.apk
