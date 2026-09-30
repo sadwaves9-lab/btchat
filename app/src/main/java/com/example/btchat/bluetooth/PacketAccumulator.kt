@@ -5,7 +5,7 @@ import java.nio.ByteBuffer
 
 /**
  * Reassembles TCP-style length-prefixed frames from a raw byte stream.
- * Frame layout: [LEN:4 big-endian][LEN bytes payload]
+ * Frame layout: 
  */
 class PacketAccumulator {
 

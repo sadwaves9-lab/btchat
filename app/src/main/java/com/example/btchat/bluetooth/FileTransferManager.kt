@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
  * FileTransferManager — chunked, resumable file transfer over Bluetooth.
  *
  * Layout per chunk:
- *   [transferId:36][chunkIndex:4][totalChunks:4][chunkLen:4][data]
+ *   
  *
  * Features:
  *   - 64 KB chunks (configurable)

@@ -91,7 +91,7 @@ class MeshRouter(
     companion object {
         /** Encode a mesh-forward wrapper. */
         fun wrapForForward(original: ByteArray, ttl: Int): ByteArray {
-            // [TYPE=0x50][TTL:1][ORIGINAL...]
+            // (comment removed)
             val out = ByteArray(2 + original.size)
             out[0] = com.example.btchat.utils.Constants.TYPE_MESH_FORWARD
             out[1] = ttl.toByte()
