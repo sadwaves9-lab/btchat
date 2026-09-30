@@ -30,6 +30,10 @@ import androidx.compose.ui.unit.sp
 import com.example.btchat.bluetooth.BtService
 import com.example.btchat.data.AppDatabase
 import com.example.btchat.data.Message
+import com.example.btchat.update.UpdateChecker
+import com.example.btchat.update.UpdateDialog
+import com.example.btchat.update.UpdateInfo
+import com.example.btchat.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -66,6 +70,20 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+fun getVersionCode(context: Context): Int {
+    return try {
+        val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pInfo.longVersionCode.toInt()
+        } else {
+            @Suppress("DEPRECATION")
+            pInfo.versionCode
+        }
+    } catch (e: Exception) {
+        1
+    }
+}
+
 @SuppressLint("MissingPermission")
 @Composable
 fun App(bt: BtService) {
@@ -80,6 +98,10 @@ fun App(bt: BtService) {
 
     val devices = remember { mutableStateListOf<Pair<String, String>>() }
 
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var isDownloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
+
     LaunchedEffect(Unit) {
         bt.startServer()
         val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE)
@@ -87,6 +109,37 @@ fun App(bt: BtService) {
         adapter?.bondedDevices?.forEach { d ->
             devices.add(d.address to (d.name ?: "Unknown"))
         }
+    }
+
+    LaunchedEffect(Unit) {
+        val currentCode = getVersionCode(ctx)
+        val info = UpdateChecker.check(currentCode)
+        if (info != null) {
+            updateInfo = info
+        }
+    }
+
+    updateInfo?.let { info ->
+        UpdateDialog(
+            info = info,
+            isDownloading = isDownloading,
+            progress = downloadProgress,
+            onDismiss = { updateInfo = null },
+            onUpdate = {
+                isDownloading = true
+                downloadProgress = 0
+                scope.launch {
+                    val file = UpdateManager.downloadApk(ctx, info.downloadUrl) { pct ->
+                        downloadProgress = pct
+                    }
+                    isDownloading = false
+                    if (file != null) {
+                        UpdateManager.installApk(ctx, file)
+                        updateInfo = null
+                    }
+                }
+            }
+        )
     }
 
     when (screen) {
@@ -265,7 +318,7 @@ fun ChatScreen(
                 value = input,
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Message…") },
+                placeholder = { Text("Message...") },
                 shape = RoundedCornerShape(24.dp)
             )
             Spacer(Modifier.width(8.dp))
