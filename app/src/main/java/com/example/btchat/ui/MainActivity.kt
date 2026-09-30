@@ -1,4 +1,7 @@
-@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.material3.ExperimentalMaterial3Api::class
+)
 
 package com.example.btchat.ui
 
@@ -18,7 +21,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -41,10 +43,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -55,7 +54,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.btchat.bluetooth.BtPacket
 import com.example.btchat.bluetooth.BtService
 import com.example.btchat.data.AppDatabase
 import com.example.btchat.data.DeviceAlias
@@ -63,14 +61,15 @@ import com.example.btchat.data.Message
 import com.example.btchat.data.MsgKind
 import com.example.btchat.data.MsgStatus
 import com.example.btchat.notif.Notifier
-import com.example.btchat.ui.theme.GlassCard
-import com.example.btchat.ui.theme.Grad
-import com.example.btchat.ui.theme.Palette
+import com.example.btchat.ui.screens.AIChatScreen
+import com.example.btchat.ui.screens.GroupManageScreen
+import com.example.btchat.ui.screens.ImageViewerScreen
 import com.example.btchat.update.UpdateChecker
 import com.example.btchat.update.UpdateDialog
 import com.example.btchat.update.UpdateInfo
 import com.example.btchat.update.UpdateManager
 import com.example.btchat.util.FileUtil
+import com.example.btchat.util.VoiceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -80,16 +79,32 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// ============ WhatsApp + Glassmorphism Colors ============
-val BgDeep = Palette.BgDeep
-val BubbleSent = Color(0xFF00695C)
-val BubbleSent2 = Color(0xFF00A884)
-val BubbleReceived = Color(0xFF1A1A2E)
-val TextPrimary = Palette.TextPrimary
-val TextSecondary = Palette.TextSecondary
-val TickRead = Color(0xFF53BDEB)
-val Accent = Palette.Emerald
-val GroupColor = Palette.Violet
+val Palette = object {
+    val DeepPurple = Color(0xFF6B46C1)
+    val RoyalBlue = Color(0xFF3B82F6)
+    val Cyan = Color(0xFF06B6D4)
+    val Pink = Color(0xFFEC4899)
+    val Rose = Color(0xFFF43F5E)
+    val Emerald = Color(0xFF10B981)
+    val Violet = Color(0xFF8B5CF6)
+    val Amber = Color(0xFFF59E0B)
+    val BgDeep = Color(0xFF0A0A15)
+    val Surface = Color(0xFF12121E)
+    val Glass = Color(0x15FFFFFF)
+    val TextPrimary = Color(0xFFF5F5FA)
+    val TextSecondary = Color(0xFFA0A0B8)
+    val TickRead = Color(0xFF53BDEB)
+}
+
+val Grad = object {
+    val purplePink = Brush.linearGradient(listOf(Palette.DeepPurple, Palette.Pink))
+    val blueCyan = Brush.linearGradient(listOf(Palette.RoyalBlue, Palette.Cyan))
+    val aurora = Brush.linearGradient(listOf(Palette.Violet, Palette.Cyan, Palette.Emerald))
+    val sunset = Brush.linearGradient(listOf(Palette.Amber, Palette.Rose, Palette.Pink))
+    val bgMain = Brush.linearGradient(
+        listOf(Color(0xFF0A0A15), Color(0xFF14142A), Color(0xFF0D0D1F))
+    )
+}
 
 const val GROUP_ID = "GROUP_CHAT"
 
@@ -105,6 +120,10 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { }
 
+    private val audioPermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Notifier.init(this)
@@ -117,6 +136,7 @@ class MainActivity : ComponentActivity() {
         } else {
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+        perms.add(Manifest.permission.RECORD_AUDIO)
         permLauncher.launch(perms.toTypedArray())
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -124,8 +144,8 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(background = BgDeep, surface = BubbleReceived)) {
-                Surface(color = BgDeep) { App(bt) }
+            MaterialTheme(colorScheme = darkColorScheme(background = Palette.BgDeep, surface = Palette.Surface)) {
+                Surface(color = Palette.BgDeep) { App(bt) }
             }
         }
     }
@@ -155,6 +175,19 @@ fun App(bt: BtService) {
     val connectedSet by bt.connectedList.collectAsState()
     val devices = remember { mutableStateMapOf<String, String>() }
 
+    // Group members - persisted
+    val groupPrefs = remember { ctx.getSharedPreferences("group_members", Context.MODE_PRIVATE) }
+    var groupMembers by remember {
+        mutableStateOf(groupPrefs.getStringSet("members", emptySet()) ?: emptySet())
+    }
+
+    // Image viewer
+    var viewingImage by remember { mutableStateOf<String?>(null) }
+
+    // Voice recorder
+    var recording by remember { mutableStateOf(false) }
+
+    // Update
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var isDownloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(0) }
@@ -170,21 +203,20 @@ fun App(bt: BtService) {
         if (info != null) updateInfo = info
     }
 
+    // Handle incoming
     LaunchedEffect(Unit) {
         bt.incoming.collect { packet ->
             scope.launch {
                 when (packet.kind) {
                     "TEXT" -> {
-                        db.messageDao().insert(
-                            Message(deviceMac = packet.fromMac, text = packet.text,
-                                isSent = false, status = MsgStatus.DELIVERED.name)
-                        )
+                        db.messageDao().insert(Message(
+                            deviceMac = packet.fromMac, text = packet.text,
+                            isSent = false, status = MsgStatus.DELIVERED.name))
                         val senderName = DeviceAlias.displayName(ctx, packet.fromMac,
                             devices[packet.fromMac] ?: "Unknown")
-                        db.messageDao().insert(
-                            Message(deviceMac = GROUP_ID, text = "$senderName: ${packet.text}",
-                                isSent = false, status = MsgStatus.DELIVERED.name)
-                        )
+                        db.messageDao().insert(Message(
+                            deviceMac = GROUP_ID, text = "$senderName: ${packet.text}",
+                            isSent = false, status = MsgStatus.DELIVERED.name))
                         bt.sendDeliveryReceipt("0")
                         val isCurrent = (screen == "chat" && selectedMac == packet.fromMac) || screen == "group"
                         if (!isCurrent) Notifier.showMessage(ctx, packet.fromMac, senderName, packet.text)
@@ -198,19 +230,17 @@ fun App(bt: BtService) {
                             val dir = File(ctx.filesDir, "received").apply { mkdirs() }
                             val outFile = File(dir, "${System.currentTimeMillis()}_$fileName")
                             withContext(Dispatchers.IO) { outFile.writeBytes(bytes) }
-                            db.messageDao().insert(
-                                Message(deviceMac = packet.fromMac, text = fileName, isSent = false,
-                                    status = MsgStatus.DELIVERED.name, kind = packet.kind,
-                                    filePath = outFile.absolutePath, fileName = fileName, fileSize = size)
-                            )
+                            db.messageDao().insert(Message(
+                                deviceMac = packet.fromMac, text = fileName, isSent = false,
+                                status = MsgStatus.DELIVERED.name, kind = packet.kind,
+                                filePath = outFile.absolutePath, fileName = fileName, fileSize = size))
                             val senderName = DeviceAlias.displayName(ctx, packet.fromMac,
                                 devices[packet.fromMac] ?: "Unknown")
-                            db.messageDao().insert(
-                                Message(deviceMac = GROUP_ID, text = "$senderName: $fileName",
-                                    isSent = false, status = MsgStatus.DELIVERED.name,
-                                    kind = packet.kind, filePath = outFile.absolutePath,
-                                    fileName = fileName, fileSize = size)
-                            )
+                            db.messageDao().insert(Message(
+                                deviceMac = GROUP_ID, text = "$senderName: $fileName",
+                                isSent = false, status = MsgStatus.DELIVERED.name,
+                                kind = packet.kind, filePath = outFile.absolutePath,
+                                fileName = fileName, fileSize = size))
                             bt.sendDeliveryReceipt("0")
                             val isCurrent = (screen == "chat" && selectedMac == packet.fromMac) || screen == "group"
                             if (!isCurrent) Notifier.showMessage(ctx, packet.fromMac, senderName, "📎 $fileName")
@@ -254,29 +284,79 @@ fun App(bt: BtService) {
         )
     }
 
+    // Image viewer overlay
+    viewingImage?.let { path ->
+        ImageViewerScreen(path, onBack = { viewingImage = null })
+        return
+    }
+
     when (screen) {
-        "home" -> HomeScreen(ctx, devices, connectedSet, bt,
+        "home" -> HomeScreen(
+            ctx = ctx,
+            devices = devices,
+            connectedSet = connectedSet,
             onDeviceClick = { mac, name -> selectedMac = mac; selectedName = name; screen = "chat" },
-            onGroupClick = { screen = "group" })
-        "chat" -> ChatScreen(selectedMac ?: "", selectedName ?: "Chat",
-            bt, db, scope, ctx, onBack = { screen = "home" }, isGroup = false)
-        "group" -> ChatScreen(GROUP_ID, "Group Chat",
-            bt, db, scope, ctx, onBack = { screen = "home" }, isGroup = true)
+            onGroupClick = { screen = "group" },
+            onAIClick = { screen = "ai" },
+            onGroupManage = { screen = "manage_group" },
+            onRefresh = {
+                scope.launch {
+                    val info = UpdateChecker.check(getVersionCode(ctx))
+                    if (info != null) updateInfo = info
+                    else Toast.makeText(ctx, "Already latest ✓", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+        "chat" -> ChatScreen(
+            mac = selectedMac ?: "", name = selectedName ?: "Chat",
+            bt = bt, db = db, scope = scope, ctx = ctx,
+            onBack = { screen = "home" },
+            isGroup = false,
+            onImageClick = { viewingImage = it }
+        )
+        "group" -> ChatScreen(
+            mac = GROUP_ID, name = "Group Chat",
+            bt = bt, db = db, scope = scope, ctx = ctx,
+            onBack = { screen = "home" },
+            isGroup = true,
+            onImageClick = { viewingImage = it },
+            groupMembers = groupMembers
+        )
+        "ai" -> AIChatScreen(onBack = { screen = "home" })
+        "manage_group" -> GroupManageScreen(
+            allDevices = devices.entries.map { it.key to DeviceAlias.displayName(ctx, it.key, it.value) },
+            initialSelected = groupMembers,
+            onBack = { screen = "home" },
+            onSave = { sel ->
+                groupMembers = sel
+                groupPrefs.edit().putStringSet("members", sel).apply()
+                Toast.makeText(ctx, "Saved ${sel.size} members", Toast.LENGTH_SHORT).show()
+                screen = "home"
+            }
+        )
     }
 }
 
-// ============ HOME SCREEN (Glassmorphism) ============
-@SuppressLint("MissingPermission")
+// ============================================================
+//  HOME SCREEN
+// ============================================================
 @Composable
 fun HomeScreen(
-    ctx: Context, devices: Map<String, String>, connectedSet: Set<String>,
-    bt: BtService, onDeviceClick: (String, String) -> Unit, onGroupClick: () -> Unit
+    ctx: Context,
+    devices: Map<String, String>,
+    connectedSet: Set<String>,
+    onDeviceClick: (String, String) -> Unit,
+    onGroupClick: () -> Unit,
+    onAIClick: () -> Unit,
+    onGroupManage: () -> Unit,
+    onRefresh: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var renameValue by remember { mutableStateOf("") }
-    var showRenameDialog by remember { mutableStateOf(false) }
-    var showAddDialog by remember { mutableStateOf(false) }
+    var showRename by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
     var manualMac by remember { mutableStateOf("") }
     var manualName by remember { mutableStateOf("") }
 
@@ -288,111 +368,89 @@ fun HomeScreen(
         .sortedBy { DeviceAlias.displayName(ctx, it.key, it.value) }
 
     Box(Modifier.fillMaxSize().background(Grad.bgMain)) {
-
-        // Animated gradient blobs
-        AnimatedBlobs()
+        Canvas2()
 
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-
-            // Glass Top Bar
+            // TOP BAR
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "BTChat",
-                    fontSize = 26.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary
-                )
+                Text("BTChat", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Palette.TextPrimary)
                 Spacer(Modifier.weight(1f))
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (connectedSet.isNotEmpty()) Grad.purplePink
-                            else Grad.glass
-                        )
-                        .clickable {},
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Bluetooth, null,
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
+                // Refresh
+                GlassIconBtn(Icons.Default.Refresh, Grad.aurora, onRefresh)
                 Spacer(Modifier.width(10.dp))
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(Grad.blueCyan)
-                        .clickable { showAddDialog = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Add, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                // Add
+                GlassIconBtn(Icons.Default.Add, Grad.blueCyan) { showAdd = true }
+                Spacer(Modifier.width(10.dp))
+                // Menu
+                Box {
+                    GlassIconBtn(Icons.Default.MoreVert, Grad.purplePink) { showMenu = true }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false },
+                        modifier = Modifier.background(Palette.Surface)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Manage Group", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.GroupAdd, null, tint = Palette.Violet) },
+                            onClick = { showMenu = false; onGroupManage() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("AI Chat", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.AutoAwesome, null, tint = Palette.Cyan) },
+                            onClick = { showMenu = false; onAIClick() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Refresh", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Refresh, null, tint = Palette.Emerald) },
+                            onClick = { showMenu = false; onRefresh() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("About", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Info, null, tint = Palette.Amber) },
+                            onClick = {
+                                showMenu = false
+                                Toast.makeText(ctx, "BTChat Ultra 2.0 · Offline BT Messenger", Toast.LENGTH_LONG).show()
+                            }
+                        )
+                    }
                 }
             }
 
-            // Glass Search Bar
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Color(0x15FFFFFF))
+            // SEARCH
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
+                    .clip(RoundedCornerShape(24.dp)).background(Color(0x15FFFFFF))
                     .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(24.dp))
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Search, null, tint = TextSecondary, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(10.dp))
-                    BasicTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        singleLine = true,
-                        textStyle = TextStyle(color = TextPrimary, fontSize = 15.sp),
-                        modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { inner ->
-                            if (searchQuery.isEmpty()) {
-                                Text("Search devices…", color = TextSecondary, fontSize = 15.sp)
-                            }
-                            inner()
-                        }
-                    )
-                }
+                Icon(Icons.Default.Search, null, tint = Palette.TextSecondary, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                BasicTextField(
+                    value = searchQuery, onValueChange = { searchQuery = it }, singleLine = true,
+                    textStyle = TextStyle(color = Palette.TextPrimary, fontSize = 15.sp),
+                    modifier = Modifier.fillMaxWidth(),
+                    decorationBox = { inner ->
+                        if (searchQuery.isEmpty())
+                            Text("Search devices…", color = Palette.TextSecondary, fontSize = 15.sp)
+                        inner()
+                    }
+                )
             }
 
             Spacer(Modifier.height(10.dp))
 
-            // Glass Group Chat Card
+            // QUICK ACTIONS - 3 cards
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0x15FFFFFF))
-                    .border(1.dp, GroupColor.copy(alpha = 0.35f), RoundedCornerShape(20.dp))
-                    .clickable { onGroupClick() }
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(
-                    Modifier.size(52.dp).clip(CircleShape).background(Grad.aurora),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Groups, null, tint = Color.White, modifier = Modifier.size(26.dp))
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Group Chat", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("${connectedSet.size} connected", color = TextSecondary, fontSize = 12.sp)
-                }
-                Icon(Icons.Default.ChevronRight, null, tint = TextSecondary)
+                QuickCard("Group", Icons.Default.Groups, Grad.aurora, Modifier.weight(1f)) { onGroupClick() }
+                QuickCard("AI Chat", Icons.Default.AutoAwesome, Grad.purplePink, Modifier.weight(1f)) { onAIClick() }
+                QuickCard("Members", Icons.Default.GroupAdd, Grad.sunset, Modifier.weight(1f)) { onGroupManage() }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -400,10 +458,9 @@ fun HomeScreen(
             Text(
                 "DEVICES (${filtered.size})",
                 Modifier.padding(start = 20.dp, bottom = 8.dp),
-                fontSize = 11.sp, color = TextSecondary, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp
+                fontSize = 11.sp, color = Palette.TextSecondary, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp
             )
 
-            // Device List
             LazyColumn(
                 Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
@@ -411,35 +468,24 @@ fun HomeScreen(
             ) {
                 items(filtered, key = { it.key }) { entry ->
                     val mac = entry.key
-                    val originalName = entry.value
-                    val displayName = DeviceAlias.displayName(ctx, mac, originalName)
+                    val origName = entry.value
+                    val dispName = DeviceAlias.displayName(ctx, mac, origName)
                     val online = connectedSet.contains(mac)
-
-                    DeviceCard(
-                        name = displayName,
-                        mac = mac,
-                        online = online,
-                        onClick = { onDeviceClick(mac, displayName) },
-                        onLongClick = {
-                            renameTarget = mac; renameValue = displayName; showRenameDialog = true
-                        }
-                    )
+                    DeviceCard(dispName, mac, online,
+                        onClick = { onDeviceClick(mac, dispName) },
+                        onLongClick = { renameTarget = mac; renameValue = dispName; showRename = true })
                 }
                 if (filtered.isEmpty()) {
                     item {
                         Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.BluetoothSearching, null, tint = TextSecondary, modifier = Modifier.size(64.dp))
+                                Icon(Icons.Default.BluetoothSearching, null, tint = Palette.TextSecondary, modifier = Modifier.size(64.dp))
                                 Spacer(Modifier.height(14.dp))
-                                Text(
-                                    if (searchQuery.isBlank()) "No paired devices" else "No results",
-                                    color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp
-                                )
+                                Text(if (searchQuery.isBlank()) "No paired devices" else "No results",
+                                    color = Palette.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                 Spacer(Modifier.height(6.dp))
-                                Text(
-                                    "Pair from Settings > Bluetooth,\nor tap + to add manually",
-                                    color = TextSecondary, fontSize = 12.sp, textAlign = TextAlign.Center
-                                )
+                                Text("Pair from Settings > Bluetooth,\nor tap + to add manually",
+                                    color = Palette.TextSecondary, fontSize = 12.sp, textAlign = TextAlign.Center)
                             }
                         }
                     }
@@ -449,210 +495,178 @@ fun HomeScreen(
     }
 
     // Rename Dialog
-    if (showRenameDialog) {
-        AlertDialog(
-            onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename Device", color = TextPrimary) },
-            text = {
-                Column {
-                    Text("New name:", color = TextSecondary, fontSize = 13.sp)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = renameValue, onValueChange = { renameValue = it }, singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color(0x20FFFFFF),
-                            unfocusedContainerColor = Color(0x20FFFFFF),
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary,
-                            cursorColor = Accent
-                        )
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    renameTarget?.let { mac -> if (renameValue.isNotBlank()) DeviceAlias.set(ctx, mac, renameValue.trim()) }
-                    showRenameDialog = false
-                }) { Text("Save", color = Accent) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRenameDialog = false }) { Text("Cancel", color = TextSecondary) }
-            },
-            containerColor = BubbleReceived
-        )
+    if (showRename) {
+        AppDialog(
+            title = "Rename Device",
+            onDismiss = { showRename = false },
+            onSave = {
+                renameTarget?.let { mac -> if (renameValue.isNotBlank()) DeviceAlias.set(ctx, mac, renameValue.trim()) }
+                showRename = false
+            }
+        ) {
+            DialogField(renameValue) { renameValue = it }
+        }
     }
 
-    // Add Device Dialog
-    if (showAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text("Add Device", color = TextPrimary) },
-            text = {
-                Column {
-                    Text("MAC address:", color = TextSecondary, fontSize = 13.sp)
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = manualMac, onValueChange = { manualMac = it }, singleLine = true,
-                        placeholder = { Text("AA:BB:CC:DD:EE:FF", color = TextSecondary) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color(0x20FFFFFF), unfocusedContainerColor = Color(0x20FFFFFF),
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary, cursorColor = Accent
-                        )
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("Name:", color = TextSecondary, fontSize = 13.sp)
-                    Spacer(Modifier.height(6.dp))
-                    OutlinedTextField(
-                        value = manualName, onValueChange = { manualName = it }, singleLine = true,
-                        placeholder = { Text("Friend", color = TextSecondary) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = Color(0x20FFFFFF), unfocusedContainerColor = Color(0x20FFFFFF),
-                            focusedTextColor = TextPrimary, unfocusedTextColor = TextPrimary, cursorColor = Accent
-                        )
-                    )
+    // Add Dialog
+    if (showAdd) {
+        AppDialog(
+            title = "Add Device",
+            onDismiss = { showAdd = false },
+            onSave = {
+                if (manualMac.isNotBlank() && manualName.isNotBlank()) {
+                    DeviceAlias.set(ctx, manualMac.trim(), manualName.trim())
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (manualMac.isNotBlank() && manualName.isNotBlank()) {
-                        DeviceAlias.set(ctx, manualMac.trim(), manualName.trim())
-                    }
-                    manualMac = ""; manualName = ""
-                    showAddDialog = false
-                }) { Text("Add", color = Accent) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) { Text("Cancel", color = TextSecondary) }
-            },
-            containerColor = BubbleReceived
-        )
+                manualMac = ""; manualName = ""
+                showAdd = false
+            }
+        ) {
+            Text("MAC Address", color = Palette.TextSecondary, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            DialogField(manualMac, "AA:BB:CC:DD:EE:FF") { manualMac = it }
+            Spacer(Modifier.height(10.dp))
+            Text("Name", color = Palette.TextSecondary, fontSize = 12.sp)
+            Spacer(Modifier.height(6.dp))
+            DialogField(manualName, "Friend") { manualName = it }
+        }
     }
 }
 
-// ============ Animated Background Blobs ============
 @Composable
-fun AnimatedBlobs() {
-    val infinite = rememberInfiniteTransition(label = "blobs")
-    val shift by infinite.animateFloat(
-        initialValue = 0f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            tween(15000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ), label = "shift"
+fun GlassIconBtn(icon: androidx.compose.ui.graphics.vector.ImageVector, brush: Brush, onClick: () -> Unit) {
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).background(brush).clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp)) }
+}
+
+@Composable
+fun QuickCard(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, brush: Brush, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).background(Color(0x15FFFFFF))
+            .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(16.dp))
+            .clickable { onClick() }.padding(vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(Modifier.size(40.dp).clip(CircleShape).background(brush), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(label, color = Palette.TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+fun AppDialog(title: String, onDismiss: () -> Unit, onSave: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title, color = Palette.TextPrimary) },
+        text = { Column { content() } },
+        confirmButton = { TextButton(onClick = onSave) { Text("Save", color = Palette.Emerald) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Palette.TextSecondary) } },
+        containerColor = Palette.Surface
     )
-    Canvas2(shift)
 }
 
 @Composable
-fun Canvas2(shift: Float) {
+fun DialogField(value: String, placeholder: String = "", onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value, onValueChange = onChange, singleLine = true,
+        placeholder = { if (placeholder.isNotEmpty()) Text(placeholder, color = Palette.TextSecondary) },
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedContainerColor = Color(0x20FFFFFF), unfocusedContainerColor = Color(0x20FFFFFF),
+            focusedTextColor = Palette.TextPrimary, unfocusedTextColor = Palette.TextPrimary,
+            cursorColor = Palette.Emerald
+        )
+    )
+}
+
+@Composable
+fun Canvas2() {
     androidx.compose.foundation.Canvas(Modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
+        val w = size.width; val h = size.height
         drawCircle(
             brush = Brush.radialGradient(
                 listOf(Palette.DeepPurple.copy(alpha = 0.3f), Color.Transparent),
-                center = androidx.compose.ui.geometry.Offset(w * (0.2f + 0.3f * shift), h * 0.15f),
-                radius = 500f
-            ),
+                center = androidx.compose.ui.geometry.Offset(w * 0.2f, h * 0.15f), radius = 500f),
             radius = 500f,
-            center = androidx.compose.ui.geometry.Offset(w * (0.2f + 0.3f * shift), h * 0.15f)
+            center = androidx.compose.ui.geometry.Offset(w * 0.2f, h * 0.15f)
         )
         drawCircle(
             brush = Brush.radialGradient(
                 listOf(Palette.Pink.copy(alpha = 0.25f), Color.Transparent),
-                center = androidx.compose.ui.geometry.Offset(w * (0.8f - 0.3f * shift), h * 0.75f),
-                radius = 450f
-            ),
+                center = androidx.compose.ui.geometry.Offset(w * 0.8f, h * 0.75f), radius = 450f),
             radius = 450f,
-            center = androidx.compose.ui.geometry.Offset(w * (0.8f - 0.3f * shift), h * 0.75f)
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                listOf(Palette.Cyan.copy(alpha = 0.2f), Color.Transparent),
-                center = androidx.compose.ui.geometry.Offset(w * 0.5f, h * (0.4f + 0.2f * shift)),
-                radius = 400f
-            ),
-            radius = 400f,
-            center = androidx.compose.ui.geometry.Offset(w * 0.5f, h * (0.4f + 0.2f * shift))
+            center = androidx.compose.ui.geometry.Offset(w * 0.8f, h * 0.75f)
         )
     }
 }
 
-// ============ Device Card (Glass) ============
 @Composable
-fun DeviceCard(
-    name: String, mac: String, online: Boolean,
-    onClick: () -> Unit, onLongClick: () -> Unit
-) {
+fun DeviceCard(name: String, mac: String, online: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
+        Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(
-                Brush.linearGradient(
-                    listOf(
-                        Color.White.copy(alpha = 0.10f),
-                        Color.White.copy(alpha = 0.04f)
-                    )
-                )
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(20.dp))
+            .background(Brush.linearGradient(listOf(Color(0x15FFFFFF), Color(0x08FFFFFF))))
+            .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(20.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box {
             Box(
-                Modifier
-                    .size(52.dp)
-                    .clip(CircleShape)
-                    .background(
-                        if (online) Grad.aurora
-                        else Brush.linearGradient(listOf(Color(0xFF2A2A40), Color(0xFF1A1A30)))
-                    ),
+                Modifier.size(52.dp).clip(CircleShape)
+                    .background(if (online) Grad.aurora else Brush.linearGradient(listOf(Color(0xFF2A2A40), Color(0xFF1A1A30)))),
                 contentAlignment = Alignment.Center
-            ) {
-                Text(name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
-            }
+            ) { Text(name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp) }
             Box(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(16.dp)
-                    .clip(CircleShape)
+                Modifier.align(Alignment.BottomEnd).size(16.dp).clip(CircleShape)
                     .background(if (online) Palette.Emerald else Color(0xFF666680))
-                    .border(2.dp, BgDeep, CircleShape)
+                    .border(2.dp, Palette.BgDeep, CircleShape)
             )
         }
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text(name, color = Palette.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Spacer(Modifier.height(3.dp))
-            Text(if (online) "online" else mac, color = if (online) Accent else TextSecondary, fontSize = 12.sp)
+            Text(if (online) "online" else mac, color = if (online) Palette.Emerald else Palette.TextSecondary, fontSize = 12.sp)
         }
-        Icon(Icons.Default.ChevronRight, null, tint = TextSecondary.copy(0.6f))
+        Icon(Icons.Default.ChevronRight, null, tint = Palette.TextSecondary.copy(0.6f))
     }
 }
 
-// ============ CHAT SCREEN ============
+// ============================================================
+//  CHAT SCREEN
+// ============================================================
 @SuppressLint("MissingPermission")
 @Composable
 fun ChatScreen(
     mac: String, name: String,
     bt: BtService, db: AppDatabase, scope: CoroutineScope, ctx: Context,
-    onBack: () -> Unit, isGroup: Boolean
+    onBack: () -> Unit, isGroup: Boolean,
+    onImageClick: (String) -> Unit,
+    groupMembers: Set<String> = emptySet()
 ) {
     var input by remember { mutableStateOf("") }
     val messages by db.messageDao().messagesFor(mac).collectAsState(initial = emptyList())
     val connectedSet by bt.connectedList.collectAsState()
     val listState = rememberLazyListState()
 
-    val imagePicker = rememberImagePicker { uri -> handlePicked(ctx, uri, "IMAGE", mac, isGroup, bt, db, scope) }
-    val videoPicker = rememberVideoPicker { uri -> handlePicked(ctx, uri, "VIDEO", mac, isGroup, bt, db, scope) }
-    val audioPicker = rememberAudioPicker { uri -> handlePicked(ctx, uri, "AUDIO", mac, isGroup, bt, db, scope) }
-    val filePicker = rememberFilePicker { uri -> handlePicked(ctx, uri, "FILE", mac, isGroup, bt, db, scope) }
+    val imagePicker = rememberPicker { uri -> handlePicked(ctx, uri, "IMAGE", mac, isGroup, bt, db, scope) }
+    val videoPicker = rememberPicker { uri -> handlePicked(ctx, uri, "VIDEO", mac, isGroup, bt, db, scope) }
+    val audioPicker = rememberPicker { uri -> handlePicked(ctx, uri, "AUDIO", mac, isGroup, bt, db, scope) }
+    val filePicker = rememberPicker { uri -> handlePicked(ctx, uri, "FILE", mac, isGroup, bt, db, scope) }
 
     var showAttach by remember { mutableStateOf(false) }
     var menuTarget by remember { mutableStateOf<Message?>(null) }
     var replyTarget by remember { mutableStateOf<Message?>(null) }
+
+    // Voice
+    var recording by remember { mutableStateOf(false) }
+    val voiceRecorder = remember { VoiceRecorder(ctx) }
+    val amplitude by voiceRecorder.amplitude.collectAsState()
+    val elapsed by voiceRecorder.elapsed.collectAsState()
+    val isRecording by voiceRecorder.isRecording.collectAsState()
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -661,7 +675,11 @@ fun ChatScreen(
     LaunchedEffect(isGroup) {
         if (isGroup) {
             val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
-            adapter?.bondedDevices?.forEach { d -> bt.connect(d) }
+            adapter?.bondedDevices?.forEach { d ->
+                if (groupMembers.isEmpty() || groupMembers.contains(d.address)) {
+                    bt.connect(d)
+                }
+            }
         }
     }
 
@@ -673,19 +691,16 @@ fun ChatScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Grad.bgMain)) {
-        Canvas2(0.5f)
+        Canvas2()
 
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
 
-            // Top Bar Glass
+            // TOP BAR
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Color(0x30FFFFFF))
-                    .padding(horizontal = 8.dp, vertical = 10.dp),
+                Modifier.fillMaxWidth().background(Color(0x30FFFFFF)).padding(horizontal = 8.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null, tint = TextPrimary) }
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null, tint = Palette.TextPrimary) }
                 Box(
                     Modifier.size(42.dp).clip(CircleShape)
                         .background(if (isGroup) Grad.aurora else Grad.purplePink),
@@ -696,17 +711,41 @@ fun ChatScreen(
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(name, color = Palette.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(
-                        if (isGroup) "${connectedSet.size} participants"
-                        else if (connectedSet.contains(mac)) "online" else "offline",
-                        color = if (isGroup || connectedSet.contains(mac)) Accent else TextSecondary,
+                        if (isGroup) "${connectedSet.size} online" else if (connectedSet.contains(mac)) "online" else "offline",
+                        color = if (isGroup || connectedSet.contains(mac)) Palette.Emerald else Palette.TextSecondary,
                         fontSize = 12.sp
                     )
                 }
-                Icon(Icons.Default.MoreVert, null, tint = TextPrimary)
+                // Menu
+                var showMenu by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { showMenu = true }) {
+                        Icon(Icons.Default.MoreVert, null, tint = Palette.TextPrimary)
+                    }
+                    DropdownMenu(
+                        expanded = showMenu, onDismissRequest = { showMenu = false },
+                        modifier = Modifier.background(Palette.Surface)
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Clear chat", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = Palette.Rose) },
+                            onClick = {
+                                showMenu = false
+                                scope.launch { db.messageDao().clearAll(mac) }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("AI Chat", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.AutoAwesome, null, tint = Palette.Cyan) },
+                            onClick = { showMenu = false }
+                        )
+                    }
+                }
             }
 
+            // MESSAGES
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
@@ -714,7 +753,7 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg) { menuTarget = msg }
+                    MessageBubble(msg, onLongPress = { menuTarget = msg }, onImageClick = onImageClick)
                 }
             }
 
@@ -726,112 +765,129 @@ fun ChatScreen(
             ) {
                 replyTarget?.let { r ->
                     Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0x20FFFFFF))
-                            .padding(10.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
+                            .clip(RoundedCornerShape(12.dp)).background(Color(0x20FFFFFF)).padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(Modifier.width(3.dp).height(30.dp).background(Accent))
+                        Box(Modifier.width(3.dp).height(30.dp).background(Palette.Emerald))
                         Spacer(Modifier.width(10.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Replying to:", color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                            Text(r.text, color = TextPrimary, fontSize = 13.sp, maxLines = 1)
+                            Text("Replying to:", color = Palette.Emerald, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text(r.text, color = Palette.TextPrimary, fontSize = 13.sp, maxLines = 1)
                         }
                         IconButton(onClick = { replyTarget = null }) {
-                            Icon(Icons.Default.Close, null, tint = TextSecondary)
+                            Icon(Icons.Default.Close, null, tint = Palette.TextSecondary)
                         }
                     }
                 }
             }
 
-            // Input Bar
+            // Recording indicator
+            AnimatedVisibility(visible = isRecording) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(12.dp)).background(Color(0x20FF0000)).padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(10.dp).clip(CircleShape).background(Color.Red))
+                    Spacer(Modifier.width(10.dp))
+                    Text("Recording… ${formatMs(elapsed)}", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.weight(1f))
+                    Text("Release to send", color = Palette.TextSecondary, fontSize = 11.sp)
+                }
+            }
+
+            // INPUT BAR
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Color(0x30FFFFFF))
-                    .padding(6.dp),
+                Modifier.fillMaxWidth().background(Color(0x30FFFFFF)).padding(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Attach
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).clickable { showAttach = true },
                     contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.AttachFile, null, tint = TextPrimary, modifier = Modifier.size(26.dp))
-                }
+                ) { Icon(Icons.Default.AttachFile, null, tint = Palette.TextPrimary, modifier = Modifier.size(26.dp)) }
+
                 Spacer(Modifier.width(4.dp))
+
                 Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Color(0x20FFFFFF))
+                    Modifier.weight(1f).clip(RoundedCornerShape(24.dp)).background(Color(0x20FFFFFF))
                         .border(1.dp, Color(0x15FFFFFF), RoundedCornerShape(24.dp))
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
                     BasicTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        textStyle = TextStyle(color = TextPrimary, fontSize = 15.sp),
-                        modifier = Modifier.fillMaxWidth(),
-                        maxLines = 4,
+                        value = input, onValueChange = { input = it },
+                        textStyle = TextStyle(color = Palette.TextPrimary, fontSize = 15.sp),
+                        modifier = Modifier.fillMaxWidth(), maxLines = 4,
                         decorationBox = { inner ->
-                            if (input.isEmpty()) {
-                                Text(if (isGroup) "Message group" else "Message", color = TextSecondary, fontSize = 15.sp)
-                            }
+                            if (input.isEmpty())
+                                Text(if (isGroup) "Message group" else "Message", color = Palette.TextSecondary, fontSize = 15.sp)
                             inner()
                         }
                     )
                 }
+
                 Spacer(Modifier.width(6.dp))
-                Box(
-                    Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(Grad.blueCyan)
-                        .clickable {
-                            val t = input.trim()
-                            if (t.isEmpty()) return@clickable
-                            val replyId = replyTarget?.id?.toString()
-                            scope.launch {
-                                if (isGroup) {
-                                    db.messageDao().insert(
-                                        Message(deviceMac = GROUP_ID, text = "Me: $t", isSent = true,
-                                            status = MsgStatus.SENT.name, replyTo = replyId)
-                                    )
-                                    bt.broadcast("Me: $t")
-                                } else {
-                                    val connected = connectedSet.contains(mac)
-                                    val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
-                                    db.messageDao().insert(
-                                        Message(deviceMac = mac, text = t, isSent = true,
-                                            status = status.name, pendingSend = !connected, replyTo = replyId)
-                                    )
-                                    if (connected) bt.send(mac, t)
+
+                // Send / Mic button
+                if (input.isNotBlank()) {
+                    Box(
+                        Modifier.size(48.dp).clip(CircleShape).background(Grad.blueCyan)
+                            .clickable {
+                                val t = input.trim()
+                                if (t.isEmpty()) return@clickable
+                                val replyId = replyTarget?.id?.toString()
+                                scope.launch {
+                                    if (isGroup) {
+                                        db.messageDao().insert(Message(deviceMac = GROUP_ID, text = "Me: $t",
+                                            isSent = true, status = MsgStatus.SENT.name, replyTo = replyId))
+                                        bt.broadcast("Me: $t")
+                                    } else {
+                                        val connected = connectedSet.contains(mac)
+                                        val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
+                                        db.messageDao().insert(Message(deviceMac = mac, text = t, isSent = true,
+                                            status = status.name, pendingSend = !connected, replyTo = replyId))
+                                        if (connected) bt.send(mac, t)
+                                    }
                                 }
-                            }
-                            input = ""
-                            replyTarget = null
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Send, null, tint = Color.White)
+                                input = ""
+                                replyTarget = null
+                            },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.Send, null, tint = Color.White) }
+                } else {
+                    // Mic button
+                    Box(
+                        Modifier.size(48.dp).clip(CircleShape).background(Grad.sunset)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = {
+                                    val f = voiceRecorder.start()
+                                    if (f == null) {
+                                        Toast.makeText(ctx, "Mic permission required", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) { Icon(Icons.Default.Mic, null, tint = Color.White) }
+
+                    // Stop button when recording
+                    LaunchedEffect(isRecording) {
+                        // Auto-stop is not handled; user taps another button
+                    }
                 }
             }
         }
     }
 
+    // Attach sheet
     if (showAttach) {
-        ModalBottomSheet(
-            onDismissRequest = { showAttach = false },
-            containerColor = BubbleReceived
-        ) {
+        ModalBottomSheet(onDismissRequest = { showAttach = false }, containerColor = Palette.Surface) {
             Column(Modifier.padding(20.dp)) {
-                Text("Send", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("Send", color = Palette.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Spacer(Modifier.height(16.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    AttachOpt(Icons.Default.Image, "Image", Palette.Purple2()) { showAttach = false; imagePicker.launch("image/*") }
+                    AttachOpt(Icons.Default.Image, "Image", Color(0xFF9C27B0)) { showAttach = false; imagePicker.launch("image/*") }
                     AttachOpt(Icons.Default.Videocam, "Video", Palette.Rose) { showAttach = false; videoPicker.launch("video/*") }
                     AttachOpt(Icons.Default.Mic, "Audio", Palette.Amber) { showAttach = false; audioPicker.launch("audio/*") }
                     AttachOpt(Icons.Default.InsertDriveFile, "File", Palette.RoyalBlue) { showAttach = false; filePicker.launch("*/*") }
@@ -841,53 +897,45 @@ fun ChatScreen(
         }
     }
 
-    // Context Menu
+    // Context menu
     menuTarget?.let { msg ->
         AlertDialog(
             onDismissRequest = { menuTarget = null },
-            title = { Text("Options", color = TextPrimary) },
+            title = { Text("Options", color = Palette.TextPrimary) },
             text = {
                 Column {
-                    MsgMenuItem(Icons.Default.Reply, "Reply") { replyTarget = msg; menuTarget = null }
-                    MsgMenuItem(Icons.Default.ContentCopy, "Copy") {
+                    MsgMenu(Icons.Default.Reply, "Reply") { replyTarget = msg; menuTarget = null }
+                    MsgMenu(Icons.Default.ContentCopy, "Copy") {
                         val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         cm.setPrimaryClip(ClipData.newPlainText("msg", msg.text))
-                        Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
-                        menuTarget = null
+                        Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show(); menuTarget = null
                     }
-                    MsgMenuItem(Icons.Default.Star, if (msg.isStarred) "Unstar" else "Star") {
-                        scope.launch { db.messageDao().star(msg.id, !msg.isStarred) }
-                        menuTarget = null
+                    MsgMenu(Icons.Default.Star, if (msg.isStarred) "Unstar" else "Star") {
+                        scope.launch { db.messageDao().star(msg.id, !msg.isStarred) }; menuTarget = null
                     }
-                    MsgMenuItem(Icons.Default.Share, "Forward") {
-                        val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_TEXT, msg.text)
+                    MsgMenu(Icons.Default.Share, "Forward") {
+                        val i = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                            type = "text/plain"; putExtra(android.content.Intent.EXTRA_TEXT, msg.text)
                         }
-                        ctx.startActivity(android.content.Intent.createChooser(sendIntent, "Forward"))
-                        menuTarget = null
+                        ctx.startActivity(android.content.Intent.createChooser(i, "Forward")); menuTarget = null
                     }
-                    MsgMenuItem(Icons.Default.Delete, "Delete") {
-                        scope.launch { db.messageDao().softDelete(msg.id) }
-                        menuTarget = null
+                    MsgMenu(Icons.Default.Delete, "Delete") {
+                        scope.launch { db.messageDao().softDelete(msg.id) }; menuTarget = null
                     }
                 }
             },
             confirmButton = {},
-            containerColor = BubbleReceived
+            containerColor = Palette.Surface
         )
     }
 }
 
 @Composable
-fun MsgMenuItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, null, tint = TextPrimary, modifier = Modifier.size(22.dp))
+fun MsgMenu(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, tint = Palette.TextPrimary, modifier = Modifier.size(22.dp))
         Spacer(Modifier.width(14.dp))
-        Text(label, color = TextPrimary, fontSize = 15.sp)
+        Text(label, color = Palette.TextPrimary, fontSize = 15.sp)
     }
 }
 
@@ -898,25 +946,14 @@ fun AttachOpt(icon: androidx.compose.ui.graphics.vector.ImageVector, label: Stri
             Icon(icon, null, tint = Color.White, modifier = Modifier.size(28.dp))
         }
         Spacer(Modifier.height(6.dp))
-        Text(label, color = TextPrimary, fontSize = 12.sp)
+        Text(label, color = Palette.TextPrimary, fontSize = 12.sp)
     }
 }
 
 @Composable
-fun rememberImagePicker(cb: (Uri) -> Unit) = androidx.activity.compose.rememberLauncherForActivityResult(
-    ActivityResultContracts.GetContent()) { uri -> uri?.let { cb(it) } }
-
-@Composable
-fun rememberVideoPicker(cb: (Uri) -> Unit) = androidx.activity.compose.rememberLauncherForActivityResult(
-    ActivityResultContracts.GetContent()) { uri -> uri?.let { cb(it) } }
-
-@Composable
-fun rememberAudioPicker(cb: (Uri) -> Unit) = androidx.activity.compose.rememberLauncherForActivityResult(
-    ActivityResultContracts.GetContent()) { uri -> uri?.let { cb(it) } }
-
-@Composable
-fun rememberFilePicker(cb: (Uri) -> Unit) = androidx.activity.compose.rememberLauncherForActivityResult(
-    ActivityResultContracts.GetContent()) { uri -> uri?.let { cb(it) } }
+fun rememberPicker(cb: (Uri) -> Unit) = androidx.activity.compose.rememberLauncherForActivityResult(
+    ActivityResultContracts.GetContent()
+) { uri -> uri?.let { cb(it) } }
 
 fun handlePicked(ctx: Context, uri: Uri, kind: String, mac: String, isGroup: Boolean,
                  bt: BtService, db: AppDatabase, scope: CoroutineScope) {
@@ -941,42 +978,28 @@ fun handlePicked(ctx: Context, uri: Uri, kind: String, mac: String, isGroup: Boo
     }
 }
 
-// ============ Message Bubble (Glass) ============
 @Composable
-fun MessageBubble(msg: Message, onLongPress: () -> Unit) {
+fun MessageBubble(msg: Message, onLongPress: () -> Unit, onImageClick: (String) -> Unit) {
     val isSent = msg.isSent
-    val bubbleShape = if (isSent)
-        RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
+    val shape = if (isSent) RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp)
     else RoundedCornerShape(16.dp, 16.dp, 16.dp, 4.dp)
 
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start
-    ) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start) {
         Column(
-            Modifier
-                .widthIn(max = 300.dp)
-                .clip(bubbleShape)
+            Modifier.widthIn(max = 300.dp).clip(shape)
                 .background(
                     if (isSent) Grad.blueCyan
                     else Brush.linearGradient(listOf(Color(0x25FFFFFF), Color(0x15FFFFFF)))
                 )
-                .border(
-                    1.dp,
-                    if (isSent) Color.Transparent else Color(0x20FFFFFF),
-                    bubbleShape
-                )
+                .border(1.dp, if (isSent) Color.Transparent else Color(0x20FFFFFF), shape)
                 .combinedClickable(onClick = {}, onLongClick = onLongPress)
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             if (msg.replyTo != null) {
-                Row(
-                    Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(3.dp).height(20.dp).background(Color(0x80FFFFFF)))
                     Spacer(Modifier.width(6.dp))
-                    Text("↩ Replied message", color = Color(0xCCFFFFFF), fontSize = 11.sp)
+                    Text("↩ Replied", color = Color(0xCCFFFFFF), fontSize = 11.sp)
                 }
             }
             when (msg.kind) {
@@ -987,32 +1010,36 @@ fun MessageBubble(msg: Message, onLongPress: () -> Unit) {
                             try { BitmapFactory.decodeFile(path) } catch (_: Exception) { null }
                         }
                         if (bmp != null) {
-                            Image(
-                                bitmap = bmp.asImageBitmap(), contentDescription = null,
-                                modifier = Modifier.width(220.dp).heightIn(max = 280.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                contentScale = ContentScale.Fit
-                            )
+                            Box(
+                                Modifier.width(220.dp).heightIn(max = 280.dp).clip(RoundedCornerShape(12.dp))
+                                    .clickable { onImageClick(path) }
+                            ) {
+                                Image(
+                                    bitmap = bmp.asImageBitmap(), contentDescription = null,
+                                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
                             Spacer(Modifier.height(4.dp))
                             Text(msg.text, color = Color.White, fontSize = 13.sp)
                         }
                     } else {
-                        Text("📷 ${msg.text}", color = TextPrimary, fontSize = 15.sp)
+                        Text("📷 ${msg.text}", color = Palette.TextPrimary, fontSize = 15.sp)
                     }
                 }
-                MsgKind.VIDEO.name -> Text("🎥 ${msg.text}", color = TextPrimary, fontSize = 15.sp)
-                MsgKind.AUDIO.name -> Text("🎵 ${msg.text}", color = TextPrimary, fontSize = 15.sp)
+                MsgKind.VIDEO.name -> Text("🎥 ${msg.text}", color = Palette.TextPrimary, fontSize = 15.sp)
+                MsgKind.AUDIO.name -> Text("🎵 ${msg.text}", color = Palette.TextPrimary, fontSize = 15.sp)
                 MsgKind.FILE.name -> {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.InsertDriveFile, null, tint = if (isSent) Color.White else Accent, modifier = Modifier.size(28.dp))
+                        Icon(Icons.Default.InsertDriveFile, null, tint = if (isSent) Color.White else Palette.Emerald, modifier = Modifier.size(28.dp))
                         Spacer(Modifier.width(8.dp))
                         Column {
-                            Text(msg.text, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text(FileUtil.humanSize(msg.fileSize), color = TextSecondary, fontSize = 11.sp)
+                            Text(msg.text, color = Palette.TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text(FileUtil.humanSize(msg.fileSize), color = Palette.TextSecondary, fontSize = 11.sp)
                         }
                     }
                 }
-                else -> Text(msg.text, color = if (isSent) Color.White else TextPrimary, fontSize = 15.sp)
+                else -> Text(msg.text, color = if (isSent) Color.White else Palette.TextPrimary, fontSize = 15.sp)
             }
             Spacer(Modifier.height(3.dp))
             Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
@@ -1020,7 +1047,7 @@ fun MessageBubble(msg: Message, onLongPress: () -> Unit) {
                     Icon(Icons.Default.Star, null, tint = Color(0xFFFFD700), modifier = Modifier.size(12.dp))
                     Spacer(Modifier.width(4.dp))
                 }
-                Text(formatTime(msg.timestamp), color = if (isSent) Color(0xCCFFFFFF) else TextSecondary, fontSize = 11.sp)
+                Text(formatTime(msg.timestamp), color = if (isSent) Color(0xCCFFFFFF) else Palette.TextSecondary, fontSize = 11.sp)
                 if (isSent) {
                     Spacer(Modifier.width(4.dp))
                     StatusTick(msg.status)
@@ -1037,11 +1064,12 @@ fun StatusTick(statusStr: String) {
         MsgStatus.SENDING -> Icon(Icons.Default.Schedule, null, tint = Color(0xAAFFFFFF), modifier = Modifier.size(14.dp))
         MsgStatus.SENT -> Icon(Icons.Default.Check, null, tint = Color(0xCCFFFFFF), modifier = Modifier.size(14.dp))
         MsgStatus.DELIVERED -> Icon(Icons.Default.DoneAll, null, tint = Color(0xCCFFFFFF), modifier = Modifier.size(14.dp))
-        MsgStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = TickRead, modifier = Modifier.size(14.dp))
+        MsgStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = Palette.TickRead, modifier = Modifier.size(14.dp))
     }
 }
 
 fun formatTime(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
-
-// Helper for Purple color (to avoid name clash)
-private fun Palette.Purple2() = Color(0xFF9C27B0)
+fun formatMs(ms: Long): String {
+    val s = ms / 1000
+    return "%02d:%02d".format(s / 60, s % 60)
+}

@@ -12,7 +12,7 @@ android {
         applicationId = "com.example.btchat"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
+        versionCode = 10
         versionName = "2.0"
     }
 
