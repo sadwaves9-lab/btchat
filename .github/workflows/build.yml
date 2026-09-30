@@ -36,14 +36,13 @@ jobs:
           yes | sdkmanager --licenses || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Fix gradle wrapper
-        run: |
-          chmod +x gradlew
-          rm -f gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
-          gradle wrapper --gradle-version 8.4
+      - name: Setup Gradle 8.4
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
 
-      - name: Build APK
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
+      - name: Build Debug APK
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
