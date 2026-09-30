@@ -11,7 +11,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -40,25 +39,25 @@ import com.example.btchat.update.UpdateDialog
 import com.example.btchat.update.UpdateInfo
 import com.example.btchat.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// WhatsApp Colors
-val BgDark = Color(0xFF0B141A)          // chat background
-val BgTopBar = Color(0xFF1F2C34)        // top bar / bubble received
-val BubbleSent = Color(0xFF005C4B)      // sent bubble (green)
-val BubbleReceived = Color(0xFF1F2C34)  // received bubble (grey)
+val BgDark = Color(0xFF0B141A)
+val BgTopBar = Color(0xFF1F2C34)
+val BubbleSent = Color(0xFF005C4B)
+val BubbleReceived = Color(0xFF1F2C34)
 val TextPrimary = Color(0xFFE9EDEF)
 val TextSecondary = Color(0xFF8696A0)
 val TickRead = Color(0xFF53BDEB)
-val Accent = Color(0xFF00A884)          // WhatsApp green
+val Accent = Color(0xFF00A884)
+val GroupColor = Color(0xFF6E4BFF)
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var bt: BtService
+
     private val notifPermLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { }
@@ -87,9 +86,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = BgDark, surface = BgTopBar)) {
-                Surface(color = BgDark) {
-                    App(bt)
-                }
+                Surface(color = BgDark) { App(bt) }
             }
         }
     }
@@ -106,6 +103,8 @@ fun getVersionCode(context: Context): Int = try {
     else @Suppress("DEPRECATION") pInfo.versionCode
 } catch (_: Exception) { 1 }
 
+const val GROUP_ID = "GROUP_CHAT"
+
 @SuppressLint("MissingPermission")
 @Composable
 fun App(bt: BtService) {
@@ -116,7 +115,7 @@ fun App(bt: BtService) {
     var screen by remember { mutableStateOf("home") }
     var selectedMac by remember { mutableStateOf<String?>(null) }
     var selectedName by remember { mutableStateOf<String?>(null) }
-    val connectedMac by bt.connected.collectAsState()
+    val connectedSet by bt.connectedList.collectAsState()
 
     val devices = remember { mutableStateListOf<Pair<String, String>>() }
 
@@ -133,30 +132,29 @@ fun App(bt: BtService) {
         }
     }
 
-    // OTA
     LaunchedEffect(Unit) {
         val info = UpdateChecker.check(getVersionCode(ctx))
         if (info != null) updateInfo = info
     }
 
-    // Incoming messages → save + notify + send delivery
+    // Incoming messages
     LaunchedEffect(Unit) {
         bt.incoming.collect { pair ->
             val mac = pair.first
             val text = pair.second
             scope.launch {
+                // Save to individual chat
                 db.messageDao().insert(
-                    Message(
-                        deviceMac = mac,
-                        text = text,
-                        isSent = false,
-                        status = MsgStatus.DELIVERED.name
-                    )
+                    Message(deviceMac = mac, text = text, isSent = false, status = MsgStatus.DELIVERED.name)
                 )
-                // Send delivery receipt back
+                // Save to group chat
+                val senderName = devices.firstOrNull { it.first == mac }?.second ?: mac
+                db.messageDao().insert(
+                    Message(deviceMac = GROUP_ID, text = "$senderName: $text", isSent = false, status = MsgStatus.DELIVERED.name)
+                )
                 bt.sendDeliveryReceipt("0")
-                // Show notification if not on that chat
-                val isCurrentChat = screen == "chat" && selectedMac == mac
+                val isCurrentChat = (screen == "chat" && selectedMac == mac) ||
+                        (screen == "group")
                 if (!isCurrentChat) {
                     val name = devices.firstOrNull { it.first == mac }?.second ?: "Unknown"
                     Notifier.showMessage(ctx, mac, name, text)
@@ -165,23 +163,22 @@ fun App(bt: BtService) {
         }
     }
 
-    // Delivered receipts from other phone
     LaunchedEffect(Unit) {
         bt.delivered.collect {
             scope.launch {
-                // Mark last sent message as DELIVERED
                 val mac = selectedMac ?: return@launch
                 db.messageDao().markAllSent(mac, MsgStatus.DELIVERED.name)
+                db.messageDao().markAllSent(GROUP_ID, MsgStatus.DELIVERED.name)
             }
         }
     }
 
-    // Read receipts
     LaunchedEffect(Unit) {
         bt.read.collect {
             scope.launch {
                 val mac = selectedMac ?: return@launch
                 db.messageDao().markAllRead(mac, MsgStatus.READ.name, MsgStatus.READ.name)
+                db.messageDao().markAllRead(GROUP_ID, MsgStatus.READ.name, MsgStatus.READ.name)
             }
         }
     }
@@ -193,17 +190,11 @@ fun App(bt: BtService) {
             progress = downloadProgress,
             onDismiss = { updateInfo = null },
             onUpdate = {
-                isDownloading = true
-                downloadProgress = 0
+                isDownloading = true; downloadProgress = 0
                 scope.launch {
-                    val file = UpdateManager.downloadApk(ctx, info.downloadUrl) { pct ->
-                        downloadProgress = pct
-                    }
+                    val file = UpdateManager.downloadApk(ctx, info.downloadUrl) { pct -> downloadProgress = pct }
                     isDownloading = false
-                    if (file != null) {
-                        UpdateManager.installApk(ctx, file)
-                        updateInfo = null
-                    }
+                    if (file != null) { UpdateManager.installApk(ctx, file); updateInfo = null }
                 }
             }
         )
@@ -212,20 +203,25 @@ fun App(bt: BtService) {
     when (screen) {
         "home" -> HomeScreen(
             devices = devices,
-            connectedMac = connectedMac,
+            connectedSet = connectedSet,
             onDeviceClick = { mac, name ->
-                selectedMac = mac
-                selectedName = name
-                screen = "chat"
+                selectedMac = mac; selectedName = name; screen = "chat"
+            },
+            onGroupClick = {
+                screen = "group"
             }
         )
         "chat" -> ChatScreen(
-            mac = selectedMac ?: "",
-            name = selectedName ?: "Chat",
-            bt = bt,
-            db = db,
-            scope = scope,
-            onBack = { screen = "home" }
+            mac = selectedMac ?: "", name = selectedName ?: "Chat",
+            bt = bt, db = db, scope = scope,
+            onBack = { screen = "home" },
+            isGroup = false
+        )
+        "group" -> ChatScreen(
+            mac = GROUP_ID, name = "Group Chat",
+            bt = bt, db = db, scope = scope,
+            onBack = { screen = "home" },
+            isGroup = true
         )
     }
 }
@@ -233,76 +229,56 @@ fun App(bt: BtService) {
 @Composable
 fun HomeScreen(
     devices: List<Pair<String, String>>,
-    connectedMac: String?,
-    onDeviceClick: (String, String) -> Unit
+    connectedSet: Set<String>,
+    onDeviceClick: (String, String) -> Unit,
+    onGroupClick: () -> Unit
 ) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(BgDark)
-    ) {
-        // WhatsApp top bar
+    Column(Modifier.fillMaxSize().background(BgDark)) {
+        Row(
+            Modifier.fillMaxWidth().background(BgTopBar).padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("BTChat", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
+            Spacer(Modifier.weight(1f))
+            Text("${connectedSet.size} online", fontSize = 12.sp, color = Accent, fontWeight = FontWeight.Bold)
+        }
+
+        // Group Chat button
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(BgTopBar)
+                .padding(16.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(GroupColor.copy(alpha = 0.15f))
+                .clickable { onGroupClick() }
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "BTChat",
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
-            Spacer(Modifier.weight(1f))
-            Icon(
-                Icons.Default.Bluetooth,
-                null,
-                tint = if (connectedMac != null) Accent else TextSecondary
-            )
-        }
-
-        // Status banner
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF111B21))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
             Box(
-                Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(if (connectedMac != null) Accent else Color.Gray)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                if (connectedMac != null) "Connected: $connectedMac" else "Not connected",
-                fontSize = 13.sp,
-                color = TextSecondary
-            )
+                Modifier.size(48.dp).clip(CircleShape).background(GroupColor),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Groups, null, tint = Color.White)
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Group Chat", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Chat with all connected devices", color = TextSecondary, fontSize = 12.sp)
+            }
+            Icon(Icons.Default.ChevronRight, null, tint = TextSecondary)
         }
-
-        Spacer(Modifier.height(8.dp))
 
         Text(
             "PAIRED DEVICES",
             Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
-            fontSize = 12.sp,
-            color = TextSecondary,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp
+            fontSize = 12.sp, color = TextSecondary, fontWeight = FontWeight.Bold
         )
 
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 4.dp)
-        ) {
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 4.dp)) {
             items(devices) { pair ->
                 val mac = pair.first
                 val name = pair.second
+                val online = connectedSet.contains(mac)
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -310,25 +286,25 @@ fun HomeScreen(
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(Accent.copy(alpha = 0.3f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            name.take(1).uppercase(),
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
+                    Box {
+                        Box(
+                            Modifier.size(48.dp).clip(CircleShape).background(Accent.copy(alpha = 0.3f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(name.take(1).uppercase(), color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        }
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomEnd)
+                                .size(14.dp)
+                                .clip(CircleShape)
+                                .background(if (online) Accent else Color.Gray)
                         )
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Spacer(Modifier.height(2.dp))
-                        Text(mac, color = TextSecondary, fontSize = 12.sp)
+                        Text(if (online) "online" else mac, color = if (online) Accent else TextSecondary, fontSize = 12.sp)
                     }
                     Icon(Icons.Default.ChevronRight, null, tint = TextSecondary)
                 }
@@ -338,120 +314,92 @@ fun HomeScreen(
 }
 
 @SuppressLint("MissingPermission")
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    mac: String,
-    name: String,
-    bt: BtService,
-    db: AppDatabase,
-    scope: CoroutineScope,
-    onBack: () -> Unit
+    mac: String, name: String,
+    bt: BtService, db: AppDatabase, scope: CoroutineScope,
+    onBack: () -> Unit,
+    isGroup: Boolean
 ) {
     val ctx = LocalContext.current
     var input by remember { mutableStateOf("") }
     val messages by db.messageDao().messagesFor(mac).collectAsState(initial = emptyList())
-    val connectedMac by bt.connected.collectAsState()
+    val connectedSet by bt.connectedList.collectAsState()
     val listState = rememberLazyListState()
 
-    // Auto scroll to bottom
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
-        }
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
-    LaunchedEffect(mac) {
-        if (connectedMac != mac) {
-            val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE)
-                as? BluetoothManager)?.adapter
-            try {
-                val device = adapter?.getRemoteDevice(mac)
-                device?.let { bt.connect(it) }
-            } catch (_: Exception) { }
-        }
-    }
-
-    // When connected: send pending messages + mark all as read
-    LaunchedEffect(connectedMac) {
-        if (connectedMac == mac) {
-            // Send pending
-            val pending = db.messageDao().pendingFor(mac)
-            pending.forEach { p ->
-                val ok = bt.send(p.text)
-                if (ok) {
-                    db.messageDao().updateStatus(p.id, MsgStatus.SENT.name)
+    // Auto connect to all paired devices if group
+    LaunchedEffect(isGroup) {
+        if (isGroup) {
+            val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            adapter?.bondedDevices?.forEach { d ->
+                if (!connectedSet.contains(d.address)) {
+                    bt.connect(d)
                 }
             }
-            db.messageDao().markAllSent(mac, MsgStatus.SENT.name)
-            // Mark received as read
-            db.messageDao().markAllRead(mac, MsgStatus.READ.name, MsgStatus.READ.name)
-            bt.sendReadReceipt("0")
+        }
+    }
+
+    // When not group, connect to specific
+    LaunchedEffect(mac) {
+        if (!isGroup && !connectedSet.contains(mac)) {
+            val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+            try { adapter?.getRemoteDevice(mac)?.let { bt.connect(it) } } catch (_: Exception) { }
         }
     }
 
     Column(Modifier.fillMaxSize().background(BgDark)) {
-
-        // WhatsApp-style top bar
+        // Top bar
         Row(
-            Modifier
-                .fillMaxWidth()
-                .background(BgTopBar)
-                .padding(horizontal = 8.dp, vertical = 10.dp),
+            Modifier.fillMaxWidth().background(BgTopBar).padding(horizontal = 8.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
                 Icon(Icons.Default.ArrowBack, null, tint = TextPrimary)
             }
             Box(
-                Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Accent.copy(alpha = 0.3f)),
+                Modifier.size(40.dp).clip(CircleShape)
+                    .background(if (isGroup) GroupColor else Accent.copy(alpha = 0.3f)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(name.take(1).uppercase(), color = TextPrimary, fontWeight = FontWeight.Bold)
+                if (isGroup) Icon(Icons.Default.Groups, null, tint = Color.White)
+                else Text(name.take(1).uppercase(), color = TextPrimary, fontWeight = FontWeight.Bold)
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(name, color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Text(
-                    if (connectedMac == mac) "online" else "offline",
-                    color = if (connectedMac == mac) Accent else TextSecondary,
+                    if (isGroup) "${connectedSet.size} participants" else if (connectedSet.contains(mac)) "online" else "offline",
+                    color = if (isGroup || connectedSet.contains(mac)) Accent else TextSecondary,
                     fontSize = 12.sp
                 )
             }
             Icon(Icons.Default.MoreVert, null, tint = TextPrimary)
         }
 
-        // Messages
         LazyColumn(
             state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
             contentPadding = PaddingValues(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             items(messages, key = { it.id }) { msg ->
-                MessageBubble(msg)
+                MessageBubble(msg, isGroup)
             }
         }
 
-        // Input bar
         Row(
-            Modifier
-                .fillMaxWidth()
-                .background(BgTopBar)
-                .padding(6.dp),
+            Modifier.fillMaxWidth().background(BgTopBar).padding(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Message", color = TextSecondary) },
+                placeholder = { Text(if (isGroup) "Message group" else "Message", color = TextSecondary) },
                 shape = RoundedCornerShape(24.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedContainerColor = Color(0xFF2A3942),
@@ -465,28 +413,25 @@ fun ChatScreen(
             )
             Spacer(Modifier.width(6.dp))
             Box(
-                Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Accent)
+                Modifier.size(48.dp).clip(CircleShape)
+                    .background(if (isGroup) GroupColor else Accent)
                     .clickable {
                         val t = input.trim()
                         if (t.isEmpty()) return@clickable
-                        val connected = connectedMac == mac
-                        val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
-                        val pending = !connected
                         scope.launch {
-                            val newId = db.messageDao().insert(
-                                Message(
-                                    deviceMac = mac,
-                                    text = t,
-                                    isSent = true,
-                                    status = status.name,
-                                    pendingSend = pending
+                            if (isGroup) {
+                                db.messageDao().insert(
+                                    Message(deviceMac = GROUP_ID, text = "Me: $t", isSent = true, status = MsgStatus.SENT.name)
                                 )
-                            )
-                            if (connected) {
-                                bt.send(t)
+                                bt.broadcast("Me: $t")
+                            } else {
+                                val connected = connectedSet.contains(mac)
+                                val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
+                                db.messageDao().insert(
+                                    Message(deviceMac = mac, text = t, isSent = true,
+                                        status = status.name, pendingSend = !connected)
+                                )
+                                if (connected) bt.send(mac, t)
                             }
                         }
                         input = ""
@@ -500,41 +445,25 @@ fun ChatScreen(
 }
 
 @Composable
-fun MessageBubble(msg: Message) {
+fun MessageBubble(msg: Message, isGroup: Boolean) {
     val isSent = msg.isSent
     val bubbleColor = if (isSent) BubbleSent else BubbleReceived
-    val shape = if (isSent) {
-        RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 2.dp)
-    } else {
-        RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 2.dp, bottomEnd = 12.dp)
-    }
+    val shape = if (isSent)
+        RoundedCornerShape(12.dp, 12.dp, 12.dp, 2.dp)
+    else RoundedCornerShape(12.dp, 12.dp, 2.dp, 12.dp)
 
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (isSent) Arrangement.End else Arrangement.Start
     ) {
         Column(
-            Modifier
-                .widthIn(max = 300.dp)
-                .clip(shape)
-                .background(bubbleColor)
+            Modifier.widthIn(max = 300.dp).clip(shape).background(bubbleColor)
                 .padding(horizontal = 10.dp, vertical = 6.dp)
         ) {
-            Text(
-                msg.text,
-                color = TextPrimary,
-                fontSize = 15.sp
-            )
+            Text(msg.text, color = TextPrimary, fontSize = 15.sp)
             Spacer(Modifier.height(2.dp))
-            Row(
-                Modifier.align(Alignment.End),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    formatTime(msg.timestamp),
-                    color = TextSecondary,
-                    fontSize = 11.sp
-                )
+            Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                Text(formatTime(msg.timestamp), color = TextSecondary, fontSize = 11.sp)
                 if (isSent) {
                     Spacer(Modifier.width(4.dp))
                     StatusTick(msg.status)
@@ -548,28 +477,11 @@ fun MessageBubble(msg: Message) {
 fun StatusTick(statusStr: String) {
     val status = try { MsgStatus.valueOf(statusStr) } catch (_: Exception) { MsgStatus.SENT }
     when (status) {
-        MsgStatus.SENDING -> Icon(
-            Icons.Default.Schedule, null,
-            tint = TextSecondary,
-            modifier = Modifier.size(14.dp)
-        )
-        MsgStatus.SENT -> Icon(
-            Icons.Default.Check, null,
-            tint = TextSecondary,
-            modifier = Modifier.size(14.dp)
-        )
-        MsgStatus.DELIVERED -> Icon(
-            Icons.Default.DoneAll, null,
-            tint = TextSecondary,
-            modifier = Modifier.size(14.dp)
-        )
-        MsgStatus.READ -> Icon(
-            Icons.Default.DoneAll, null,
-            tint = TickRead,
-            modifier = Modifier.size(14.dp)
-        )
+        MsgStatus.SENDING -> Icon(Icons.Default.Schedule, null, tint = TextSecondary, modifier = Modifier.size(14.dp))
+        MsgStatus.SENT -> Icon(Icons.Default.Check, null, tint = TextSecondary, modifier = Modifier.size(14.dp))
+        MsgStatus.DELIVERED -> Icon(Icons.Default.DoneAll, null, tint = TextSecondary, modifier = Modifier.size(14.dp))
+        MsgStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = TickRead, modifier = Modifier.size(14.dp))
     }
 }
 
-fun formatTime(ts: Long): String =
-    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+fun formatTime(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))

@@ -26,6 +26,7 @@ import kotlinx.coroutines.launch
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 @SuppressLint("MissingPermission")
 class BtService(private val context: Context) {
@@ -35,23 +36,40 @@ class BtService(private val context: Context) {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
     private var serverJob: Job? = null
-    private var connectedSocket: BluetoothSocket? = null
-    private var output: OutputStream? = null
 
-    // Pair<String, String> = <mac, text>
-    private val _incoming = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 32)
+    // Map: MAC address → connection
+    private data class Conn(
+        val socket: BluetoothSocket,
+        var output: OutputStream,
+        val job: Job? = null
+    )
+
+    private val connections = ConcurrentHashMap<String, Conn>()
+
+    // Incoming messages: <fromMac, text>
+    private val _incoming = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 64)
     val incoming: SharedFlow<Pair<String, String>> = _incoming.asSharedFlow()
 
-    // Delivery receipts: message delivered to other phone
     private val _delivered = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val delivered: SharedFlow<String> = _delivered.asSharedFlow()
 
-    // Read receipts from other phone
     private val _read = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val read: SharedFlow<String> = _read.asSharedFlow()
 
-    private val _connected = MutableStateFlow<String?>(null)
-    val connected: StateFlow<String?> = _connected.asStateFlow()
+    // All currently connected MAC addresses
+    private val _connectedList = MutableStateFlow<Set<String>>(emptySet())
+    val connectedList: StateFlow<Set<String>> = _connectedList.asStateFlow()
+
+    // For UI backward compat — first connected device
+    val connected: StateFlow<String?>
+        get() = object : StateFlow<String?> {
+            override val value get() = _connectedList.value.firstOrNull()
+            override val replayCache get() = listOf(value)
+            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<String?>): Nothing {
+                _connectedList.collect { collector.emit(it.firstOrNull()) }
+                throw IllegalStateException()
+            }
+        }
 
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
 
@@ -69,76 +87,89 @@ class BtService(private val context: Context) {
                     adapter?.listenUsingRfcommWithServiceRecord("BTChat", uuid) ?: return@launch
                 while (currentCoroutineContext().isActive) {
                     val socket = server.accept() ?: continue
-                    connectedSocket = socket
-                    output = socket.outputStream
-                    _connected.value = socket.remoteDevice?.address
-                    listenLoop(socket)
+                    val mac = socket.remoteDevice?.address ?: continue
+                    registerConnection(mac, socket)
                 }
             } catch (_: Exception) { }
         }
     }
 
     fun connect(device: BluetoothDevice) {
+        if (connections.containsKey(device.address)) return
         scope.launch {
             try {
                 adapter?.cancelDiscovery()
                 val socket = device.createRfcommSocketToServiceRecord(uuid)
                 socket.connect()
-                connectedSocket = socket
-                output = socket.outputStream
-                _connected.value = device.address
-                // Send any pending messages for this device
-                onConnectedCallbacks.forEach { it(device.address) }
-                listenLoop(socket)
+                registerConnection(device.address, socket)
+            } catch (_: Exception) { }
+        }
+    }
+
+    private fun registerConnection(mac: String, socket: BluetoothSocket) {
+        val out = socket.outputStream
+        val conn = Conn(socket, out)
+        connections[mac] = conn
+        _connectedList.value = connections.keys.toSet()
+
+        // Start listening
+        val job = scope.launch { listenLoop(mac, socket) }
+        // fire onConnected callbacks
+        onConnectedCallbacks.toList().forEach { it(mac) }
+    }
+
+    /**
+     * Send to ALL connected devices (group chat).
+     */
+    fun broadcast(text: String) {
+        val packet = "MSG|${System.currentTimeMillis()}|$text\n".toByteArray()
+        val macs = connections.keys.toList()
+        macs.forEach { mac ->
+            try {
+                connections[mac]?.output?.write(packet)
+                connections[mac]?.output?.flush()
             } catch (_: Exception) {
-                _connected.value = null
+                removeConnection(mac)
             }
         }
     }
 
-    fun send(text: String): Boolean {
-        val out = output ?: return false
+    /**
+     * Send to ONE device.
+     */
+    fun send(mac: String, text: String): Boolean {
+        val conn = connections[mac] ?: return false
         return try {
-            // Protocol: "MSG|<timestamp>|<text>"
             val packet = "MSG|${System.currentTimeMillis()}|$text\n"
-            out.write(packet.toByteArray())
-            out.flush()
+            conn.output.write(packet.toByteArray())
+            conn.output.flush()
             true
         } catch (_: Exception) {
+            removeConnection(mac)
             false
         }
     }
 
     fun sendDeliveryReceipt(remoteTs: String) {
-        scope.launch {
-            try {
-                val out = output ?: return@launch
-                val packet = "DLV|$remoteTs|\n"
-                out.write(packet.toByteArray())
-                out.flush()
-            } catch (_: Exception) { }
+        val packet = "DLV|$remoteTs|\n".toByteArray()
+        connections.values.forEach {
+            try { it.output.write(packet); it.output.flush() } catch (_: Exception) { }
         }
     }
 
     fun sendReadReceipt(remoteTs: String) {
-        scope.launch {
-            try {
-                val out = output ?: return@launch
-                val packet = "RD|$remoteTs|\n"
-                out.write(packet.toByteArray())
-                out.flush()
-            } catch (_: Exception) { }
+        val packet = "RD|$remoteTs|\n".toByteArray()
+        connections.values.forEach {
+            try { it.output.write(packet); it.output.flush() } catch (_: Exception) { }
         }
     }
 
-    // Callback on reconnect: send pending messages
     private val onConnectedCallbacks = mutableListOf<(String) -> Unit>()
     fun onConnected(cb: (String) -> Unit) { onConnectedCallbacks.add(cb) }
 
-    private suspend fun listenLoop(socket: BluetoothSocket) {
+    private suspend fun listenLoop(mac: String, socket: BluetoothSocket) {
         val input: InputStream = socket.inputStream
         val buf = ByteArray(8192)
-        val mac = socket.remoteDevice?.address ?: ""
         try {
             while (currentCoroutineContext().isActive) {
                 val n = input.read(buf)
@@ -156,14 +187,20 @@ class BtService(private val context: Context) {
                 }
             }
         } catch (_: Exception) { }
-        _connected.value = null
+        removeConnection(mac)
     }
 
+    private fun removeConnection(mac: String) {
+        try { connections[mac]?.socket?.close() } catch (_: Exception) { }
+        connections.remove(mac)
+        _connectedList.value = connections.keys.toSet()
+    }
+
+    fun disconnect(mac: String) = removeConnection(mac)
+
     fun stop() {
-        try { connectedSocket?.close() } catch (_: Exception) { }
-        connectedSocket = null
-        output = null
+        connections.keys.toList().forEach { removeConnection(it) }
         serverJob?.cancel()
-        _connected.value = null
+        _connectedList.value = emptySet()
     }
 }
