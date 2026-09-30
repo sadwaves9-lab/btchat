@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM messages WHERE deviceMac = :mac ORDER BY timestamp ASC")
+    @Query("SELECT * FROM messages WHERE deviceMac = :mac AND isDeleted = 0 ORDER BY timestamp ASC")
     fun messagesFor(mac: String): Flow<List<Message>>
 
     @Insert
@@ -28,9 +28,24 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE pendingSend = 1 AND deviceMac = :mac ORDER BY timestamp ASC")
     suspend fun pendingFor(mac: String): List<Message>
+
+    @Query("UPDATE messages SET isStarred = :starred WHERE id = :id")
+    suspend fun star(id: Long, starred: Boolean)
+
+    @Query("UPDATE messages SET isDeleted = 1 WHERE id = :id")
+    suspend fun softDelete(id: Long)
+
+    @Query("DELETE FROM messages WHERE deviceMac = :mac")
+    suspend fun clearAll(mac: String)
+
+    @Query("SELECT * FROM messages WHERE deviceMac = :mac AND text LIKE '%' || :q || '%' ORDER BY timestamp DESC LIMIT 30")
+    suspend fun search(mac: String, q: String): List<Message>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE deviceMac = :mac AND isSent = 0 AND status != :readStatus AND isDeleted = 0")
+    suspend fun unread(mac: String, readStatus: String): Int
 }
 
-@Database(entities = [Message::class], version = 3, exportSchema = false)
+@Database(entities = [Message::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
 

@@ -4,8 +4,7 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 
 enum class MsgStatus { SENDING, SENT, DELIVERED, READ }
-
-enum class MsgKind { TEXT, IMAGE, VIDEO, AUDIO, FILE }
+enum class MsgKind { TEXT, IMAGE, VIDEO, AUDIO, FILE, LOCATION, CONTACT }
 
 @Entity(tableName = "messages")
 data class Message(
@@ -20,5 +19,8 @@ data class Message(
     val filePath: String? = null,
     val fileName: String? = null,
     val fileSize: Long = 0L,
-    val mimeType: String? = null
+    val mimeType: String? = null,
+    val isStarred: Boolean = false,
+    val isDeleted: Boolean = false,
+    val replyTo: String? = null
 )
