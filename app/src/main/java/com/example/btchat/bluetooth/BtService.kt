@@ -28,6 +28,8 @@ import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+data class BtPacket(val fromMac: String, val kind: String, val text: String)
+
 @SuppressLint("MissingPermission")
 class BtService(private val context: Context) {
 
@@ -37,18 +39,12 @@ class BtService(private val context: Context) {
 
     private var serverJob: Job? = null
 
-    // Map: MAC address → connection
-    private data class Conn(
-        val socket: BluetoothSocket,
-        var output: OutputStream,
-        val job: Job? = null
-    )
+    private data class Conn(val socket: BluetoothSocket, var output: OutputStream)
 
     private val connections = ConcurrentHashMap<String, Conn>()
 
-    // Incoming messages: <fromMac, text>
-    private val _incoming = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 64)
-    val incoming: SharedFlow<Pair<String, String>> = _incoming.asSharedFlow()
+    private val _incoming = MutableSharedFlow<BtPacket>(extraBufferCapacity = 64)
+    val incoming: SharedFlow<BtPacket> = _incoming.asSharedFlow()
 
     private val _delivered = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val delivered: SharedFlow<String> = _delivered.asSharedFlow()
@@ -56,28 +52,10 @@ class BtService(private val context: Context) {
     private val _read = MutableSharedFlow<String>(extraBufferCapacity = 32)
     val read: SharedFlow<String> = _read.asSharedFlow()
 
-    // All currently connected MAC addresses
     private val _connectedList = MutableStateFlow<Set<String>>(emptySet())
     val connectedList: StateFlow<Set<String>> = _connectedList.asStateFlow()
 
-    // For UI backward compat — first connected device
-    val connected: StateFlow<String?>
-        get() = object : StateFlow<String?> {
-            override val value get() = _connectedList.value.firstOrNull()
-            override val replayCache get() = listOf(value)
-            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<String?>): Nothing {
-                _connectedList.collect { collector.emit(it.firstOrNull()) }
-                throw IllegalStateException()
-            }
-        }
-
     private val uuid: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-
-    fun hasPermission(): Boolean {
-        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-            Manifest.permission.BLUETOOTH_CONNECT else Manifest.permission.BLUETOOTH
-        return ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-    }
 
     fun startServer() {
         serverJob?.cancel()
@@ -108,86 +86,103 @@ class BtService(private val context: Context) {
 
     private fun registerConnection(mac: String, socket: BluetoothSocket) {
         val out = socket.outputStream
-        val conn = Conn(socket, out)
-        connections[mac] = conn
+        connections[mac] = Conn(socket, out)
         _connectedList.value = connections.keys.toSet()
-
-        // Start listening
-        val job = scope.launch { listenLoop(mac, socket) }
-        // fire onConnected callbacks
-        onConnectedCallbacks.toList().forEach { it(mac) }
+        scope.launch { listenLoop(mac, socket) }
     }
 
-    /**
-     * Send to ALL connected devices (group chat).
-     */
+    // Protocol:
+    // MSG|ts|text\n
+    // FILE|<kind>|<name>|<size>|<b64>\n
+    // DLV|ts|\n
+    // RD|ts|\n
     fun broadcast(text: String) {
         val packet = "MSG|${System.currentTimeMillis()}|$text\n".toByteArray()
-        val macs = connections.keys.toList()
-        macs.forEach { mac ->
+        connections.keys.toList().forEach { mac ->
             try {
                 connections[mac]?.output?.write(packet)
                 connections[mac]?.output?.flush()
-            } catch (_: Exception) {
-                removeConnection(mac)
-            }
+            } catch (_: Exception) { removeConnection(mac) }
         }
     }
 
-    /**
-     * Send to ONE device.
-     */
     fun send(mac: String, text: String): Boolean {
         val conn = connections[mac] ?: return false
         return try {
             val packet = "MSG|${System.currentTimeMillis()}|$text\n"
-            conn.output.write(packet.toByteArray())
-            conn.output.flush()
-            true
-        } catch (_: Exception) {
-            removeConnection(mac)
-            false
+            conn.output.write(packet.toByteArray()); conn.output.flush(); true
+        } catch (_: Exception) { removeConnection(mac); false }
+    }
+
+    fun broadcastFile(kind: String, name: String, size: Long, base64: String) {
+        val packet = "FILE|$kind|$name|$size|$base64\n".toByteArray()
+        connections.keys.toList().forEach { mac ->
+            try {
+                connections[mac]?.output?.write(packet)
+                connections[mac]?.output?.flush()
+            } catch (_: Exception) { removeConnection(mac) }
         }
+    }
+
+    fun sendFile(mac: String, kind: String, name: String, size: Long, base64: String): Boolean {
+        val conn = connections[mac] ?: return false
+        return try {
+            val packet = "FILE|$kind|$name|$size|$base64\n"
+            conn.output.write(packet.toByteArray()); conn.output.flush(); true
+        } catch (_: Exception) { removeConnection(mac); false }
     }
 
     fun sendDeliveryReceipt(remoteTs: String) {
         val packet = "DLV|$remoteTs|\n".toByteArray()
-        connections.values.forEach {
-            try { it.output.write(packet); it.output.flush() } catch (_: Exception) { }
-        }
+        connections.values.forEach { try { it.output.write(packet); it.output.flush() } catch (_: Exception) { } }
     }
 
     fun sendReadReceipt(remoteTs: String) {
         val packet = "RD|$remoteTs|\n".toByteArray()
-        connections.values.forEach {
-            try { it.output.write(packet); it.output.flush() } catch (_: Exception) { }
-        }
+        connections.values.forEach { try { it.output.write(packet); it.output.flush() } catch (_: Exception) { } }
     }
-
-    private val onConnectedCallbacks = mutableListOf<(String) -> Unit>()
-    fun onConnected(cb: (String) -> Unit) { onConnectedCallbacks.add(cb) }
 
     private suspend fun listenLoop(mac: String, socket: BluetoothSocket) {
         val input: InputStream = socket.inputStream
-        val buf = ByteArray(8192)
+        val buf = ByteArray(1_000_000)  // 1MB for big files
+        val sb = StringBuilder()
         try {
             while (currentCoroutineContext().isActive) {
                 val n = input.read(buf)
                 if (n <= 0) break
-                val raw = String(buf, 0, n)
-                raw.split("\n").forEach { line ->
-                    if (line.isBlank()) return@forEach
-                    val parts = line.split("|", limit = 4)
-                    if (parts.size < 3) return@forEach
-                    when (parts[0]) {
-                        "MSG" -> _incoming.tryEmit(mac to parts[2])
-                        "DLV" -> _delivered.tryEmit(parts[1])
-                        "RD" -> _read.tryEmit(parts[1])
-                    }
+                sb.append(String(buf, 0, n))
+                // Process complete lines (each ends with \n)
+                var idx = sb.indexOf("\n")
+                while (idx >= 0) {
+                    val line = sb.substring(0, idx)
+                    sb.delete(0, idx + 1)
+                    handleLine(mac, line)
+                    idx = sb.indexOf("\n")
                 }
             }
         } catch (_: Exception) { }
         removeConnection(mac)
+    }
+
+    private fun handleLine(mac: String, line: String) {
+        if (line.isBlank()) return
+        val parts = line.split("|", limit = 5)
+        if (parts.size < 3) return
+        when (parts[0]) {
+            "MSG" -> _incoming.tryEmit(BtPacket(mac, "TEXT", parts[2]))
+            "FILE" -> {
+                if (parts.size >= 5) {
+                    // kind|name|size|b64
+                    val kind = parts[1]
+                    val name = parts[2]
+                    val size = parts[3].toLongOrNull() ?: 0L
+                    val b64 = parts[4]
+                    _incoming.tryEmit(BtPacket(mac, kind, "$name|$size|$b64"))
+                }
+            }
+            "DLV" -> _delivered.tryEmit(parts[1])
+            "RD" -> _read.tryEmit(parts[1])
+        }
     }
 
     private fun removeConnection(mac: String) {

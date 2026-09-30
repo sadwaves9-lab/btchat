@@ -11,7 +11,6 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
-
     @Query("SELECT * FROM messages WHERE deviceMac = :mac ORDER BY timestamp ASC")
     fun messagesFor(mac: String): Flow<List<Message>>
 
@@ -29,12 +28,9 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE pendingSend = 1 AND deviceMac = :mac ORDER BY timestamp ASC")
     suspend fun pendingFor(mac: String): List<Message>
-
-    @Query("SELECT COUNT(*) FROM messages WHERE deviceMac = :mac AND isSent = 0 AND status != :readStatus")
-    suspend fun unreadCount(mac: String, readStatus: String): Int
 }
 
-@Database(entities = [Message::class], version = 2, exportSchema = false)
+@Database(entities = [Message::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
 
