@@ -11,14 +11,30 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface MessageDao {
+
     @Query("SELECT * FROM messages WHERE deviceMac = :mac ORDER BY timestamp ASC")
     fun messagesFor(mac: String): Flow<List<Message>>
 
     @Insert
     suspend fun insert(message: Message): Long
+
+    @Query("UPDATE messages SET status = :status WHERE id = :id")
+    suspend fun updateStatus(id: Long, status: String)
+
+    @Query("UPDATE messages SET status = :status, pendingSend = 0 WHERE pendingSend = 1 AND deviceMac = :mac")
+    suspend fun markAllSent(mac: String, status: String)
+
+    @Query("UPDATE messages SET status = :status WHERE deviceMac = :mac AND isSent = 1 AND status != :readStatus")
+    suspend fun markAllRead(mac: String, status: String, readStatus: String)
+
+    @Query("SELECT * FROM messages WHERE pendingSend = 1 AND deviceMac = :mac ORDER BY timestamp ASC")
+    suspend fun pendingFor(mac: String): List<Message>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE deviceMac = :mac AND isSent = 0 AND status != :readStatus")
+    suspend fun unreadCount(mac: String, readStatus: String): Int
 }
 
-@Database(entities = [Message::class], version = 1, exportSchema = false)
+@Database(entities = [Message::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
 
@@ -31,7 +47,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "btchat.db"
-                ).build().also { INSTANCE = it }
+                ).fallbackToDestructiveMigration().build().also { INSTANCE = it }
             }
     }
 }

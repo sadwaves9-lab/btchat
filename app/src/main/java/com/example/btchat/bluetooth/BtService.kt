@@ -38,8 +38,17 @@ class BtService(private val context: Context) {
     private var connectedSocket: BluetoothSocket? = null
     private var output: OutputStream? = null
 
-    private val _incoming = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 16)
+    // Pair<String, String> = <mac, text>
+    private val _incoming = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 32)
     val incoming: SharedFlow<Pair<String, String>> = _incoming.asSharedFlow()
+
+    // Delivery receipts: message delivered to other phone
+    private val _delivered = MutableSharedFlow<String>(extraBufferCapacity = 32)
+    val delivered: SharedFlow<String> = _delivered.asSharedFlow()
+
+    // Read receipts from other phone
+    private val _read = MutableSharedFlow<String>(extraBufferCapacity = 32)
+    val read: SharedFlow<String> = _read.asSharedFlow()
 
     private val _connected = MutableStateFlow<String?>(null)
     val connected: StateFlow<String?> = _connected.asStateFlow()
@@ -78,6 +87,8 @@ class BtService(private val context: Context) {
                 connectedSocket = socket
                 output = socket.outputStream
                 _connected.value = device.address
+                // Send any pending messages for this device
+                onConnectedCallbacks.forEach { it(device.address) }
                 listenLoop(socket)
             } catch (_: Exception) {
                 _connected.value = null
@@ -85,25 +96,64 @@ class BtService(private val context: Context) {
         }
     }
 
-    fun send(text: String) {
+    fun send(text: String): Boolean {
+        val out = output ?: return false
+        return try {
+            // Protocol: "MSG|<timestamp>|<text>"
+            val packet = "MSG|${System.currentTimeMillis()}|$text\n"
+            out.write(packet.toByteArray())
+            out.flush()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun sendDeliveryReceipt(remoteTs: String) {
         scope.launch {
             try {
-                output?.write(text.toByteArray())
-                output?.flush()
+                val out = output ?: return@launch
+                val packet = "DLV|$remoteTs|\n"
+                out.write(packet.toByteArray())
+                out.flush()
             } catch (_: Exception) { }
         }
     }
 
+    fun sendReadReceipt(remoteTs: String) {
+        scope.launch {
+            try {
+                val out = output ?: return@launch
+                val packet = "RD|$remoteTs|\n"
+                out.write(packet.toByteArray())
+                out.flush()
+            } catch (_: Exception) { }
+        }
+    }
+
+    // Callback on reconnect: send pending messages
+    private val onConnectedCallbacks = mutableListOf<(String) -> Unit>()
+    fun onConnected(cb: (String) -> Unit) { onConnectedCallbacks.add(cb) }
+
     private suspend fun listenLoop(socket: BluetoothSocket) {
         val input: InputStream = socket.inputStream
-        val buf = ByteArray(4096)
+        val buf = ByteArray(8192)
+        val mac = socket.remoteDevice?.address ?: ""
         try {
             while (currentCoroutineContext().isActive) {
                 val n = input.read(buf)
                 if (n <= 0) break
-                val text = String(buf, 0, n)
-                val mac = socket.remoteDevice?.address ?: ""
-                _incoming.tryEmit(mac to text)
+                val raw = String(buf, 0, n)
+                raw.split("\n").forEach { line ->
+                    if (line.isBlank()) return@forEach
+                    val parts = line.split("|", limit = 4)
+                    if (parts.size < 3) return@forEach
+                    when (parts[0]) {
+                        "MSG" -> _incoming.tryEmit(mac to parts[2])
+                        "DLV" -> _delivered.tryEmit(parts[1])
+                        "RD" -> _read.tryEmit(parts[1])
+                    }
+                }
             }
         } catch (_: Exception) { }
         _connected.value = null
