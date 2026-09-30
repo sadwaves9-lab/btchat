@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.btchat.bluetooth.BtService
+import com.example.btchat.bluetooth.ScanDevice
 import com.example.btchat.data.AppDatabase
 import com.example.btchat.data.DeviceAlias
 import com.example.btchat.data.Message
@@ -64,12 +65,12 @@ import com.example.btchat.notif.Notifier
 import com.example.btchat.ui.screens.AIChatScreen
 import com.example.btchat.ui.screens.GroupManageScreen
 import com.example.btchat.ui.screens.ImageViewerScreen
+import com.example.btchat.ui.screens.ScanScreen
 import com.example.btchat.update.UpdateChecker
 import com.example.btchat.update.UpdateDialog
 import com.example.btchat.update.UpdateInfo
 import com.example.btchat.update.UpdateManager
 import com.example.btchat.util.FileUtil
-import com.example.btchat.util.VoiceRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -118,10 +119,6 @@ class MainActivity : ComponentActivity() {
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { }
-
-    private val audioPermLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
     ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -175,19 +172,13 @@ fun App(bt: BtService) {
     val connectedSet by bt.connectedList.collectAsState()
     val devices = remember { mutableStateMapOf<String, String>() }
 
-    // Group members - persisted
     val groupPrefs = remember { ctx.getSharedPreferences("group_members", Context.MODE_PRIVATE) }
     var groupMembers by remember {
         mutableStateOf(groupPrefs.getStringSet("members", emptySet()) ?: emptySet())
     }
 
-    // Image viewer
     var viewingImage by remember { mutableStateOf<String?>(null) }
 
-    // Voice recorder
-    var recording by remember { mutableStateOf(false) }
-
-    // Update
     var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
     var isDownloading by remember { mutableStateOf(false) }
     var downloadProgress by remember { mutableStateOf(0) }
@@ -203,7 +194,6 @@ fun App(bt: BtService) {
         if (info != null) updateInfo = info
     }
 
-    // Handle incoming
     LaunchedEffect(Unit) {
         bt.incoming.collect { packet ->
             scope.launch {
@@ -284,7 +274,6 @@ fun App(bt: BtService) {
         )
     }
 
-    // Image viewer overlay
     viewingImage?.let { path ->
         ImageViewerScreen(path, onBack = { viewingImage = null })
         return
@@ -298,6 +287,7 @@ fun App(bt: BtService) {
             onDeviceClick = { mac, name -> selectedMac = mac; selectedName = name; screen = "chat" },
             onGroupClick = { screen = "group" },
             onAIClick = { screen = "ai" },
+            onScanClick = { screen = "scan" },
             onGroupManage = { screen = "manage_group" },
             onRefresh = {
                 scope.launch {
@@ -323,6 +313,28 @@ fun App(bt: BtService) {
             groupMembers = groupMembers
         )
         "ai" -> AIChatScreen(onBack = { screen = "home" })
+        "scan" -> ScanScreen(
+            onBack = { screen = "home" },
+            onConnect = { device ->
+                try {
+                    val adapter = (ctx.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+                    val btDevice = adapter?.getRemoteDevice(device.mac)
+                    if (btDevice != null) {
+                        bt.connect(btDevice)
+                        devices[device.mac] = device.name
+                        DeviceAlias.set(ctx, device.mac, device.name)
+                        Toast.makeText(ctx, "Connecting to ${device.name}…", Toast.LENGTH_SHORT).show()
+                        selectedMac = device.mac
+                        selectedName = device.name
+                        screen = "chat"
+                    } else {
+                        Toast.makeText(ctx, "Invalid device", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Exception) {
+                    Toast.makeText(ctx, "Connect failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
         "manage_group" -> GroupManageScreen(
             allDevices = devices.entries.map { it.key to DeviceAlias.displayName(ctx, it.key, it.value) },
             initialSelected = groupMembers,
@@ -348,6 +360,7 @@ fun HomeScreen(
     onDeviceClick: (String, String) -> Unit,
     onGroupClick: () -> Unit,
     onAIClick: () -> Unit,
+    onScanClick: () -> Unit,
     onGroupManage: () -> Unit,
     onRefresh: () -> Unit
 ) {
@@ -371,20 +384,16 @@ fun HomeScreen(
         Canvas2()
 
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
-            // TOP BAR
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("BTChat", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Palette.TextPrimary)
                 Spacer(Modifier.weight(1f))
-                // Refresh
                 GlassIconBtn(Icons.Default.Refresh, Grad.aurora, onRefresh)
                 Spacer(Modifier.width(10.dp))
-                // Add
                 GlassIconBtn(Icons.Default.Add, Grad.blueCyan) { showAdd = true }
                 Spacer(Modifier.width(10.dp))
-                // Menu
                 Box {
                     GlassIconBtn(Icons.Default.MoreVert, Grad.purplePink) { showMenu = true }
                     DropdownMenu(
@@ -392,6 +401,11 @@ fun HomeScreen(
                         onDismissRequest = { showMenu = false },
                         modifier = Modifier.background(Palette.Surface)
                     ) {
+                        DropdownMenuItem(
+                            text = { Text("Scan Devices", color = Palette.TextPrimary) },
+                            leadingIcon = { Icon(Icons.Default.BluetoothSearching, null, tint = Palette.Cyan) },
+                            onClick = { showMenu = false; onScanClick() }
+                        )
                         DropdownMenuItem(
                             text = { Text("Manage Group", color = Palette.TextPrimary) },
                             leadingIcon = { Icon(Icons.Default.GroupAdd, null, tint = Palette.Violet) },
@@ -419,7 +433,6 @@ fun HomeScreen(
                 }
             }
 
-            // SEARCH
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)
                     .clip(RoundedCornerShape(24.dp)).background(Color(0x15FFFFFF))
@@ -443,13 +456,13 @@ fun HomeScreen(
 
             Spacer(Modifier.height(10.dp))
 
-            // QUICK ACTIONS - 3 cards
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                QuickCard("Scan", Icons.Default.BluetoothSearching, Grad.blueCyan, Modifier.weight(1f)) { onScanClick() }
                 QuickCard("Group", Icons.Default.Groups, Grad.aurora, Modifier.weight(1f)) { onGroupClick() }
-                QuickCard("AI Chat", Icons.Default.AutoAwesome, Grad.purplePink, Modifier.weight(1f)) { onAIClick() }
+                QuickCard("AI", Icons.Default.AutoAwesome, Grad.purplePink, Modifier.weight(1f)) { onAIClick() }
                 QuickCard("Members", Icons.Default.GroupAdd, Grad.sunset, Modifier.weight(1f)) { onGroupManage() }
             }
 
@@ -484,7 +497,7 @@ fun HomeScreen(
                                 Text(if (searchQuery.isBlank()) "No paired devices" else "No results",
                                     color = Palette.TextPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                                 Spacer(Modifier.height(6.dp))
-                                Text("Pair from Settings > Bluetooth,\nor tap + to add manually",
+                                Text("Tap Scan to find nearby devices",
                                     color = Palette.TextSecondary, fontSize = 12.sp, textAlign = TextAlign.Center)
                             }
                         }
@@ -494,7 +507,6 @@ fun HomeScreen(
         }
     }
 
-    // Rename Dialog
     if (showRename) {
         AppDialog(
             title = "Rename Device",
@@ -508,7 +520,6 @@ fun HomeScreen(
         }
     }
 
-    // Add Dialog
     if (showAdd) {
         AppDialog(
             title = "Add Device",
@@ -545,14 +556,14 @@ fun QuickCard(label: String, icon: androidx.compose.ui.graphics.vector.ImageVect
     Column(
         modifier.clip(RoundedCornerShape(16.dp)).background(Color(0x15FFFFFF))
             .border(1.dp, Color(0x20FFFFFF), RoundedCornerShape(16.dp))
-            .clickable { onClick() }.padding(vertical = 14.dp),
+            .clickable { onClick() }.padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(brush), contentAlignment = Alignment.Center) {
-            Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Box(Modifier.size(36.dp).clip(CircleShape).background(brush), contentAlignment = Alignment.Center) {
+            Icon(icon, null, tint = Color.White, modifier = Modifier.size(20.dp))
         }
-        Spacer(Modifier.height(8.dp))
-        Text(label, color = Palette.TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(6.dp))
+        Text(label, color = Palette.TextPrimary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -661,13 +672,6 @@ fun ChatScreen(
     var menuTarget by remember { mutableStateOf<Message?>(null) }
     var replyTarget by remember { mutableStateOf<Message?>(null) }
 
-    // Voice
-    var recording by remember { mutableStateOf(false) }
-    val voiceRecorder = remember { VoiceRecorder(ctx) }
-    val amplitude by voiceRecorder.amplitude.collectAsState()
-    val elapsed by voiceRecorder.elapsed.collectAsState()
-    val isRecording by voiceRecorder.isRecording.collectAsState()
-
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
@@ -695,7 +699,6 @@ fun ChatScreen(
 
         Column(Modifier.fillMaxSize().statusBarsPadding()) {
 
-            // TOP BAR
             Row(
                 Modifier.fillMaxWidth().background(Color(0x30FFFFFF)).padding(horizontal = 8.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -718,7 +721,6 @@ fun ChatScreen(
                         fontSize = 12.sp
                     )
                 }
-                // Menu
                 var showMenu by remember { mutableStateOf(false) }
                 Box {
                     IconButton(onClick = { showMenu = true }) {
@@ -736,16 +738,10 @@ fun ChatScreen(
                                 scope.launch { db.messageDao().clearAll(mac) }
                             }
                         )
-                        DropdownMenuItem(
-                            text = { Text("AI Chat", color = Palette.TextPrimary) },
-                            leadingIcon = { Icon(Icons.Default.AutoAwesome, null, tint = Palette.Cyan) },
-                            onClick = { showMenu = false }
-                        )
                     }
                 }
             }
 
-            // MESSAGES
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
@@ -757,7 +753,6 @@ fun ChatScreen(
                 }
             }
 
-            // Reply preview
             AnimatedVisibility(
                 visible = replyTarget != null,
                 enter = slideInVertically { it } + fadeIn(),
@@ -782,27 +777,10 @@ fun ChatScreen(
                 }
             }
 
-            // Recording indicator
-            AnimatedVisibility(visible = isRecording) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
-                        .clip(RoundedCornerShape(12.dp)).background(Color(0x20FF0000)).padding(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(Modifier.size(10.dp).clip(CircleShape).background(Color.Red))
-                    Spacer(Modifier.width(10.dp))
-                    Text("Recording… ${formatMs(elapsed)}", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.weight(1f))
-                    Text("Release to send", color = Palette.TextSecondary, fontSize = 11.sp)
-                }
-            }
-
-            // INPUT BAR
             Row(
                 Modifier.fillMaxWidth().background(Color(0x30FFFFFF)).padding(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Attach
                 Box(
                     Modifier.size(44.dp).clip(CircleShape).clickable { showAttach = true },
                     contentAlignment = Alignment.Center
@@ -829,58 +807,34 @@ fun ChatScreen(
 
                 Spacer(Modifier.width(6.dp))
 
-                // Send / Mic button
-                if (input.isNotBlank()) {
-                    Box(
-                        Modifier.size(48.dp).clip(CircleShape).background(Grad.blueCyan)
-                            .clickable {
-                                val t = input.trim()
-                                if (t.isEmpty()) return@clickable
-                                val replyId = replyTarget?.id?.toString()
-                                scope.launch {
-                                    if (isGroup) {
-                                        db.messageDao().insert(Message(deviceMac = GROUP_ID, text = "Me: $t",
-                                            isSent = true, status = MsgStatus.SENT.name, replyTo = replyId))
-                                        bt.broadcast("Me: $t")
-                                    } else {
-                                        val connected = connectedSet.contains(mac)
-                                        val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
-                                        db.messageDao().insert(Message(deviceMac = mac, text = t, isSent = true,
-                                            status = status.name, pendingSend = !connected, replyTo = replyId))
-                                        if (connected) bt.send(mac, t)
-                                    }
+                Box(
+                    Modifier.size(48.dp).clip(CircleShape).background(Grad.blueCyan)
+                        .clickable {
+                            val t = input.trim()
+                            if (t.isEmpty()) return@clickable
+                            val replyId = replyTarget?.id?.toString()
+                            scope.launch {
+                                if (isGroup) {
+                                    db.messageDao().insert(Message(deviceMac = GROUP_ID, text = "Me: $t",
+                                        isSent = true, status = MsgStatus.SENT.name, replyTo = replyId))
+                                    bt.broadcast("Me: $t")
+                                } else {
+                                    val connected = connectedSet.contains(mac)
+                                    val status = if (connected) MsgStatus.SENT else MsgStatus.SENDING
+                                    db.messageDao().insert(Message(deviceMac = mac, text = t, isSent = true,
+                                        status = status.name, pendingSend = !connected, replyTo = replyId))
+                                    if (connected) bt.send(mac, t)
                                 }
-                                input = ""
-                                replyTarget = null
-                            },
-                        contentAlignment = Alignment.Center
-                    ) { Icon(Icons.Default.Send, null, tint = Color.White) }
-                } else {
-                    // Mic button
-                    Box(
-                        Modifier.size(48.dp).clip(CircleShape).background(Grad.sunset)
-                            .combinedClickable(
-                                onClick = {},
-                                onLongClick = {
-                                    val f = voiceRecorder.start()
-                                    if (f == null) {
-                                        Toast.makeText(ctx, "Mic permission required", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) { Icon(Icons.Default.Mic, null, tint = Color.White) }
-
-                    // Stop button when recording
-                    LaunchedEffect(isRecording) {
-                        // Auto-stop is not handled; user taps another button
-                    }
-                }
+                            }
+                            input = ""
+                            replyTarget = null
+                        },
+                    contentAlignment = Alignment.Center
+                ) { Icon(Icons.Default.Send, null, tint = Color.White) }
             }
         }
     }
 
-    // Attach sheet
     if (showAttach) {
         ModalBottomSheet(onDismissRequest = { showAttach = false }, containerColor = Palette.Surface) {
             Column(Modifier.padding(20.dp)) {
@@ -897,7 +851,6 @@ fun ChatScreen(
         }
     }
 
-    // Context menu
     menuTarget?.let { msg ->
         AlertDialog(
             onDismissRequest = { menuTarget = null },
@@ -1069,7 +1022,3 @@ fun StatusTick(statusStr: String) {
 }
 
 fun formatTime(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
-fun formatMs(ms: Long): String {
-    val s = ms / 1000
-    return "%02d:%02d".format(s / 60, s % 60)
-}
