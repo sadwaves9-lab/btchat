@@ -2,136 +2,96 @@ package com.example.btchat.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import com.example.btchat.R
 
 /* ============================================================
- *  BTChat Ultra — Typography System
- *  Poppins (body), Inter (UI), Orbitron (headings/tech)
+ *  BTChat Ultra — Typography (System fonts — no downloads needed)
  * ============================================================ */
 
-val Poppins = FontFamily(
-    Font(R.font.poppins_regular, FontWeight.Normal),
-    Font(R.font.poppins_medium, FontWeight.Medium),
-    Font(R.font.poppins_bold, FontWeight.Bold)
-)
-
-val Inter = FontFamily(
-    Font(R.font.inter_regular, FontWeight.Normal),
-    Font(R.font.inter_medium, FontWeight.Medium),
-    Font(R.font.inter_bold, FontWeight.Bold)
-)
-
-val Orbitron = FontFamily(
-    Font(R.font.orbitron_regular, FontWeight.Normal),
-    Font(R.font.orbitron_bold, FontWeight.Bold)
-)
+val Poppins = FontFamily.Default
+val Inter = FontFamily.Default
+val Orbitron = FontFamily.Default
 
 val BTChatTypography = Typography(
-
-    // Display — splash, hero
     displayLarge = TextStyle(
-        fontFamily = Orbitron,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = 48.sp,
-        lineHeight = 56.sp,
-        letterSpacing = 1.sp
+        lineHeight = 56.sp
     ),
     displayMedium = TextStyle(
-        fontFamily = Orbitron,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = 36.sp,
         lineHeight = 44.sp
     ),
     displaySmall = TextStyle(
-        fontFamily = Orbitron,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = 28.sp,
         lineHeight = 36.sp
     ),
-
-    // Headline — screens
     headlineLarge = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = 30.sp,
         lineHeight = 38.sp
     ),
     headlineMedium = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
         fontSize = 24.sp,
         lineHeight = 32.sp
     ),
     headlineSmall = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Medium,
         fontSize = 20.sp,
         lineHeight = 28.sp
     ),
-
-    // Title — cards, appbar
     titleLarge = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
-        fontSize = 20.sp,
-        lineHeight = 28.sp
+        fontSize = 20.sp
     ),
     titleMedium = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Medium,
+        fontSize = 16.sp
+    ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
         fontSize = 16.sp,
         lineHeight = 24.sp
     ),
-    titleSmall = TextStyle(
-        fontFamily = Poppins,
-        fontWeight = FontWeight.Medium,
+    bodyMedium = TextStyle(
+        fontFamily = FontFamily.Default,
         fontSize = 14.sp,
         lineHeight = 20.sp
     ),
-
-    // Body — messages, paragraphs
-    bodyLarge = TextStyle(
-        fontFamily = Inter,
-        fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.2.sp
-    ),
-    bodyMedium = TextStyle(
-        fontFamily = Inter,
-        fontWeight = FontWeight.Normal,
-        fontSize = 14.sp,
-        lineHeight = 20.sp,
-        letterSpacing = 0.15.sp
-    ),
     bodySmall = TextStyle(
-        fontFamily = Inter,
-        fontWeight = FontWeight.Normal,
+        fontFamily = FontFamily.Default,
         fontSize = 12.sp,
         lineHeight = 16.sp
     ),
-
-    // Label — buttons, chips
     labelLarge = TextStyle(
-        fontFamily = Poppins,
+        fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Bold,
-        fontSize = 15.sp,
-        letterSpacing = 0.5.sp
+        fontSize = 15.sp
     ),
     labelMedium = TextStyle(
-        fontFamily = Poppins,
-        fontWeight = FontWeight.Medium,
-        fontSize = 12.sp,
-        letterSpacing = 0.4.sp
+        fontFamily = FontFamily.Default,
+        fontSize = 12.sp
     ),
     labelSmall = TextStyle(
-        fontFamily = Poppins,
-        fontWeight = FontWeight.Medium,
-        fontSize = 10.sp,
-        letterSpacing = 0.4.sp
+        fontFamily = FontFamily.Default,
+        fontSize = 10.sp
     )
 )

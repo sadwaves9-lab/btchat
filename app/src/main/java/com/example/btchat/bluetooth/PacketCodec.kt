@@ -7,7 +7,10 @@ import com.example.btchat.utils.Constants
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
-enum class PacketType { TEXT, IMAGE, VOICE, FILE, TYPING, READ, DELIVERY, PING, PONG, HANDSHAKE, GOODBYE, UNKNOWN }
+enum class PacketType {
+    TEXT, IMAGE, VOICE, FILE, TYPING, READ, DELIVERY,
+    PING, PONG, HANDSHAKE, GOODBYE, UNKNOWN
+}
 
 data class ParsedPacket(
     val type: PacketType,
@@ -19,11 +22,11 @@ data class ParsedPacket(
  * PacketCodec — wire format.
  *
  * Layout: [LEN:4][TYPE:1][PAYLOAD...]
- *  LEN  = payload length (big-endian int)
- *  TYPE = packet type byte
- *  PAYLOAD = varies per type
+ *   LEN  = payload length (big-endian int)
+ *   TYPE = packet type byte
+ *   PAYLOAD = varies per type
  *
- *  TEXT payload: [ID_LEN:2][ID][TS:8][TEXT_UTF8...]
+ * TEXT payload: [ID_LEN:2][ID][TS:8][TEXT_LEN:2][TEXT_UTF8]
  */
 object PacketCodec {
 
@@ -77,11 +80,13 @@ object PacketCodec {
             Constants.TYPE_TEXT -> {
                 val p = ByteBuffer.wrap(payload)
                 val idLen = p.short.toInt()
-                val idBytes = ByteArray(idLen); p.get(idBytes)
+                val idBytes = ByteArray(idLen)
+                p.get(idBytes)
                 val id = String(idBytes, StandardCharsets.UTF_8)
                 val ts = p.long
                 val textLen = p.short.toInt()
-                val textBytes = ByteArray(textLen); p.get(textBytes)
+                val textBytes = ByteArray(textLen)
+                p.get(textBytes)
                 val text = String(textBytes, StandardCharsets.UTF_8)
 
                 ParsedPacket(
