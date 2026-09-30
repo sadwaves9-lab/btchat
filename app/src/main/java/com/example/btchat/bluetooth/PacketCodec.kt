@@ -18,19 +18,8 @@ data class ParsedPacket(
     val meta: String? = null
 )
 
-/**
- * PacketCodec — wire format.
- *
- * Layout: [LEN:4][TYPE:1][PAYLOAD...]
- *   LEN  = payload length (big-endian int)
- *   TYPE = packet type byte
- *   PAYLOAD = varies per type
- *
- * TEXT payload: [ID_LEN:2][ID][TS:8][TEXT_LEN:2][TEXT_UTF8]
- */
 object PacketCodec {
 
-    // ---------- Encode ----------
     fun encode(msg: ChatMessage): ByteArray {
         val textBytes = msg.text.toByteArray(StandardCharsets.UTF_8)
         val idBytes = msg.id.toByteArray(StandardCharsets.UTF_8)
@@ -66,7 +55,6 @@ object PacketCodec {
     fun pong(): ByteArray = frame(Constants.TYPE_PONG, byteArrayOf())
     fun goodbye(): ByteArray = frame(Constants.TYPE_HANDSHAKE, "bye".toByteArray())
 
-    // ---------- Decode ----------
     fun decode(packet: ByteArray, fromMac: String): ParsedPacket? {
         if (packet.size < 5) return null
         val buf = ByteBuffer.wrap(packet)
@@ -124,7 +112,6 @@ object PacketCodec {
         }
     }
 
-    // ---------- Helpers ----------
     private fun frame(type: Byte, payload: ByteArray): ByteArray {
         val out = ByteBuffer.allocate(4 + 1 + payload.size)
         out.putInt(payload.size)
