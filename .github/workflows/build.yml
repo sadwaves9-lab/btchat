@@ -54,23 +54,32 @@ jobs:
       - name: Build APK
         id: build
         continue-on-error: true
+        shell: bash
         run: |
+          set -o pipefail
           chmod +x gradlew
           gradle assembleDebug --no-daemon 2>&1 | tee build.log
+          echo "gradle_exit=$?" >> $GITHUB_OUTPUT
 
-      - name: Show errors in summary
+      - name: Show Errors in Summary
         if: always()
+        shell: bash
         run: |
-          echo "# Build Errors" >> $GITHUB_STEP_SUMMARY
+          echo "# 🔴 Build Errors" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo '## Kotlin Errors' >> $GITHUB_STEP_SUMMARY
+          echo "## Kotlin Errors (e: file:///...)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep "e: file:///" build.log | head -30 >> $GITHUB_STEP_SUMMARY || echo "No Kotlin errors" >> $GITHUB_STEP_SUMMARY
+          grep "e: file:///" build.log | head -30 >> $GITHUB_STEP_SUMMARY || echo "(none)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo '## What went wrong' >> $GITHUB_STEP_SUMMARY
+          echo "## What Went Wrong" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -A 10 "What went wrong" build.log | head -20 >> $GITHUB_STEP_SUMMARY || echo "None" >> $GITHUB_STEP_SUMMARY
+          grep -A 15 "What went wrong" build.log | head -25 >> $GITHUB_STEP_SUMMARY || echo "(none)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Last 30 lines" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -30 build.log >> $GITHUB_STEP_SUMMARY || echo "(none)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload build log
@@ -98,14 +107,12 @@ jobs:
           name: BTChat ${{ steps.ver.outputs.version_name }}
           body: |
             🚀 Auto Release
-            
             Version: ${{ steps.ver.outputs.version_name }}
-            Build: #${{ github.run_number }}
           files: output/*.apk
           draft: false
           prerelease: false
 
-      - name: Upload Artifact (backup)
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: BTChat-APK
