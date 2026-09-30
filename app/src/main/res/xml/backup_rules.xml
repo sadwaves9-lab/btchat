@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <include domain="database" path="btchat.db" />
+    <include domain="sharedpref" path="." />
+    <exclude domain="cache" path="." />
+    <exclude domain="database" path="btchat.db-journal" />
+</full-backup-content>

@@ -1,0 +1,2 @@
+-keep class com.example.btchat.model.** { *; }
+-keep @com.google.gson.annotations.SerializedName class * { *; }
