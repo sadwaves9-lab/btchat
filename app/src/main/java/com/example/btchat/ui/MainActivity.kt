@@ -79,7 +79,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-val Palette = object {
+object Palette {
     val DeepPurple = Color(0xFF6B46C1)
     val RoyalBlue = Color(0xFF3B82F6)
     val Cyan = Color(0xFF06B6D4)
@@ -96,7 +96,7 @@ val Palette = object {
     val TickRead = Color(0xFF53BDEB)
 }
 
-val Grad = object {
+object Grad {
     val purplePink = Brush.linearGradient(listOf(Palette.DeepPurple, Palette.Pink))
     val blueCyan = Brush.linearGradient(listOf(Palette.RoyalBlue, Palette.Cyan))
     val aurora = Brush.linearGradient(listOf(Palette.Violet, Palette.Cyan, Palette.Emerald))
